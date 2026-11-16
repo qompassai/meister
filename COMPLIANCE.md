@@ -171,9 +171,16 @@ the lane value is Meister's, by its README.
   gitignored and deleted after the smoke (generated, never
   committed). No `scip` CLI exists on primo, so no `scip print`
   pass was available; header check is the parse evidence.
-- Theodolite LSP validation: NOT RUN at this gate. The
-  copy-route protocol is documented (docs/BUILDING.md) and the
-  gate remains owed before the surface changes materially; the
-  cargo gates above are the Rung 0 evidence of record.
+- Theodolite LSP validation: RUN by Pax after the build gate
+  (2026-11-16), copy-route protocol per docs/BUILDING.md —
+  byte-identical copy of this commit in a throwaway git repo,
+  bacon-ls producer first, rust-analyzer diagnostics: all five
+  src files at zero errors; planted-error control in
+  src/lane.rs seen as exactly one E0308 while an untouched
+  file stayed at zero; witness restored byte-identical
+  (sha256 44a6dcd27ef28a452273c4507e80b3bb1adc7997848c34d27360068d551afe6c)
+  and all files zero again after a fresh-file refresh trigger.
+  Verdict: PASS. Record: primo
+  ~/.local/share/pax/meister-gate-20261116/gates/theodolite-record.json.
 - Client tolerance (Inspector / rose / phlow): NOT RUN; named,
   not claimed.
