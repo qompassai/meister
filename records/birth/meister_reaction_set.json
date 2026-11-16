@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_reaction_set",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_reaction_set tool schema (group 4, Dialogue and narrative creation).",
+  "produced": [
+    {
+      "path": "tools/list#meister_reaction_set",
+      "sha256": "a872ec8e68959dc2232293df82d884cf212f13db3e2af984f280b42b750f613d"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 4 (Dialogue and narrative creation); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

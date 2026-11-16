@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_content_summary",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_content_summary tool schema (group 6, Content standards and accessibility).",
+  "produced": [
+    {
+      "path": "tools/list#meister_content_summary",
+      "sha256": "1780bc4a5039f92ac08da7d9264a0e0fab9e240b5d1629edcdfde9cfb7c8a79d"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 6 (Content standards and accessibility); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

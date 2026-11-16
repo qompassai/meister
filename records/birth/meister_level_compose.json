@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_level_compose",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_level_compose tool schema (group 5, Story, plot, and level making).",
+  "produced": [
+    {
+      "path": "tools/list#meister_level_compose",
+      "sha256": "2949a9beed23ac2b2829657d5e2408073091cb83cd76d9f8efebcad37059b6f2"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 5 (Story, plot, and level making); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

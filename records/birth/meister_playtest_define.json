@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_playtest_define",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_playtest_define tool schema (group 8, Playtest and QA).",
+  "produced": [
+    {
+      "path": "tools/list#meister_playtest_define",
+      "sha256": "10150fe9c78675a13a8968274cbf6d3bc4e7edd4f2b8704819da38902a82a380"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 8 (Playtest and QA); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_scene_validate",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_scene_validate tool schema (group 3, Scenes and systems authoring).",
+  "produced": [
+    {
+      "path": "tools/list#meister_scene_validate",
+      "sha256": "9f6096e2375f353ab05370c74d22596e677d0a984f68d9dd124b3a3f06bc7533"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 3 (Scenes and systems authoring); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_lane_check",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_lane_check tool schema (the live lane gate).",
+  "produced": [
+    {
+      "path": "tools/list#meister_lane_check",
+      "sha256": "d0b11919d74edf62826a425889a02e2eb54469a3027c3f1ec3b9b0dc207adcc0"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Lane law (never softened)\" and \u00a7\"The path to 1.0\" (Rung 0: the lane gate live from the first commit)",
+  "recorded_at_epoch": 1794855860
+}

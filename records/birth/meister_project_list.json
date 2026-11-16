@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_project_list",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_project_list tool schema (group 1, Project scaffolding).",
+  "produced": [
+    {
+      "path": "tools/list#meister_project_list",
+      "sha256": "e3f518df17d429e5e052fe114fe647351946148e453a778e2c22549bd8524f3f"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 1 (Project scaffolding); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

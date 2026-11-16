@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_asset_intake",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_asset_intake tool schema (group 7, Asset routing and provenance).",
+  "produced": [
+    {
+      "path": "tools/list#meister_asset_intake",
+      "sha256": "5ecbc6708fb5ad6b996c12009e61d4bbc3c7fbf1cb91732164ec67cec744399b"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 7 (Asset routing and provenance); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

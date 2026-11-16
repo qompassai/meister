@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_preflight_run",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_preflight_run tool schema (group 9, Build and release handoff).",
+  "produced": [
+    {
+      "path": "tools/list#meister_preflight_run",
+      "sha256": "cd31c1a2fb293ca46eceab5622fe33d01d65111c77558e1e98d297b753ce68ee"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 9 (Build and release handoff); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

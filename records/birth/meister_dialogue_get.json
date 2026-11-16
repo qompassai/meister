@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_dialogue_get",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_dialogue_get tool schema (group 4, Dialogue and narrative creation).",
+  "produced": [
+    {
+      "path": "tools/list#meister_dialogue_get",
+      "sha256": "cc8a02ef5c7f72bf39ec3f8d9c72b27d275dca491a79334ca861f7da034552c1"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 4 (Dialogue and narrative creation); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

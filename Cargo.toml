@@ -1,0 +1,17 @@
+[package]
+name = "meister"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Qompass SFW game maker MCP: authoring and project state for SFW games, with a live lane gate."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Fleet pin (D-113): one rmcp version across every estate server;
+# modern era only (2026-07-28). Bumps are single fleet events.
+rmcp = { version = "=3.8.0", default-features = false, features = ["server"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync"] }
+
+[profile.release]
+lto = true

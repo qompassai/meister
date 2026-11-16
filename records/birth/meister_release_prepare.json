@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_release_prepare",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_release_prepare tool schema (group 9, Build and release handoff).",
+  "produced": [
+    {
+      "path": "tools/list#meister_release_prepare",
+      "sha256": "0fa9f7e8a2deebcb80481e704faddc354e48767fa75a054536eae4dab3a45a87"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 9 (Build and release handoff); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

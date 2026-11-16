@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_scene_define",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_scene_define tool schema (group 3, Scenes and systems authoring).",
+  "produced": [
+    {
+      "path": "tools/list#meister_scene_define",
+      "sha256": "d2d90af395893e7c0047d5ae14fe61a6ce4455e0806c61208d6ee9184a001641"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 3 (Scenes and systems authoring); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

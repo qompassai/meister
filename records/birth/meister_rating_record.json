@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_rating_record",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_rating_record tool schema (group 6, Content standards and accessibility).",
+  "produced": [
+    {
+      "path": "tools/list#meister_rating_record",
+      "sha256": "60a804963fbb0c34a82aad6b43b124438aaea602a0b28096ee8cf937e0f49f15"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 6 (Content standards and accessibility); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}

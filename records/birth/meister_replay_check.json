@@ -1,0 +1,26 @@
+{
+  "outcome_id": "birth-meister_replay_check",
+  "server": "meister",
+  "asked": "Rung 0 birth of the meister_replay_check tool schema (group 8, Playtest and QA).",
+  "produced": [
+    {
+      "path": "tools/list#meister_replay_check",
+      "sha256": "1a8f9501f0bc93d01b9a64ef3ac2a3f3f0fba50d4aae28840d86f8da0fe6ac6e"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"Tool groups\", group 8 (Playtest and QA); \u00a7\"The path to 1.0\" (Rung 0 \u2014 Birth)",
+  "recorded_at_epoch": 1794855860
+}
