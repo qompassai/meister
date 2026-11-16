@@ -14,6 +14,10 @@
   unclassifiable input `lane_unclassified`, both typed and before
   any mutation. `meister_lane_check` exposes the gate's verdict
   without storing anything.
+- Agent card corrected to spec-valid A2A v1.0.1 the same day
+  (D-1607): the MCP interface is declared as a custom-binding
+  entry in `supportedInterfaces`; the removed-in-1.0
+  `stateTransitionHistory` field is dropped.
 - Bloch birth records for all 31 schemas under `records/birth/`
   (bloch outcome-record envelope; see records/README.md).
 - Agent card at `.well-known/agent-card.json` (A2A v1.0.1 shape):

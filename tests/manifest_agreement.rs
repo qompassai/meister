@@ -8,9 +8,13 @@
 //! - the card's MCP-interface extension `registryName` ==
 //!   server.json `name`
 //!
-//! The card must also stay honest: it declares no A2A interface
-//! (Meister is an MCP server over stdio) and carries the
-//! invocation facts in its extension params.
+//! The card must also stay honest AND spec-valid (D-1607): it
+//! declares exactly one interface, bound with the qompass MCP
+//! custom binding (a URI protocolBinding, per the A2A v1.0
+//! custom-transport rule) whose url carries the stdio command
+//! under that binding's own semantics; no core A2A binding is
+//! claimed, and the invocation facts ride in the extension
+//! params.
 
 use std::path::PathBuf;
 
@@ -40,12 +44,24 @@ fn card_and_server_json_agree_on_the_join_keys() {
 #[test]
 fn card_declares_no_a2a_endpoint_and_carries_invocation() {
     let card = read_json(".well-known/agent-card.json");
-    // No supported interface is asserted: Meister has no A2A
-    // endpoint, and the card must not imply one.
+    // Spec-valid honesty (D-1607): supportedInterfaces is a
+    // required, non-empty field in A2A v1.0, so the card
+    // declares exactly one interface under the qompass MCP
+    // custom binding (URI protocolBinding); its url carries
+    // the stdio command under that binding's semantics. No
+    // core A2A binding (JSONRPC / GRPC / HTTP+JSON) is claimed.
+    let interfaces = card["supportedInterfaces"].as_array().expect("interfaces");
+    assert_eq!(interfaces.len(), 1, "exactly one declared interface");
     assert_eq!(
-        card["supportedInterfaces"],
-        serde_json::json!([]),
-        "supportedInterfaces must stay empty until an A2A endpoint exists"
+        interfaces[0]["protocolBinding"],
+        "https://qompass.ai/extensions/mcp-interface/v1"
+    );
+    assert_eq!(interfaces[0]["url"], "~/.local/bin/meister");
+    assert_eq!(interfaces[0]["protocolVersion"], "1.0");
+    // A field removed in A2A v1.0 must never reappear.
+    assert!(
+        card["capabilities"].get("stateTransitionHistory").is_none(),
+        "stateTransitionHistory was removed in A2A v1.0"
     );
     let invocation = &card["capabilities"]["extensions"][0]["params"]["invocation"];
     assert_eq!(invocation["transport"], "stdio");

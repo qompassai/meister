@@ -121,18 +121,28 @@ version 0.1.0, repository and website. Packages are OMITTED:
 nothing is published yet, and no package URL or hash is invented;
 packages are added at Rung 9 publication.
 
-The agent card (`.well-known/agent-card.json`, A2A v1.0.1
-shape) is the fleet pilot for cards as canonical capability
-manifests (D-1605). Honesty invariant: Meister is an MCP server
-over stdio and has NO A2A endpoint, so `supportedInterfaces` is
-empty — no field asserts an endpoint that does not exist. The
-MCP interface is declared via the
-`https://qompass.ai/extensions/mcp-interface/v1` capability
-extension, whose params carry the provisioning facts
-(implementation rmcp, registry name, and `invocation`:
-stdio transport, command `~/.local/bin/meister`, no args,
-protocol era 2026-07-28) so a client config can be generated
-from the card alone.
+The agent card (`.well-known/agent-card.json`, A2A v1.0.1) is
+the fleet pilot for cards as canonical capability manifests
+(D-1605), in the spec-valid fleet profile (D-1607). Meister is
+an MCP server over stdio and has NO A2A endpoint; the card
+says so without breaking the standard: `supportedInterfaces`
+(a required, non-empty field in v1.0) carries exactly one
+entry whose `protocolBinding` is the qompass MCP custom
+binding URI `https://qompass.ai/extensions/mcp-interface/v1`
+— the spec's own route for custom transports — with
+`protocolVersion` "1.0" and `url` carrying the stdio command
+`~/.local/bin/meister` under that binding's semantics. No
+core A2A binding is claimed. The same URI names the
+capability extension whose params carry the provisioning
+facts (implementation rmcp, registry name, and `invocation`:
+stdio transport, command, no args, protocol era 2026-07-28)
+so a client config can be generated from the card alone.
+Correction of record: the card was born with an empty
+`supportedInterfaces` and a `stateTransitionHistory` field
+that v1.0 removed — neither spec-valid. Both were corrected
+the same day, after the authoring standard was verified
+against the primary spec sources; the manifest-agreement
+tests now pin the corrected profile.
 
 Maintained invariant: card and server.json agree exactly on the
 join keys — card `name` == server.json `title`, card `version`
