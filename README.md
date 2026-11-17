@@ -773,6 +773,22 @@ without a control is unverified), conformance run records for every
 pipeline stage, and the Owner's verdict wherever a gate is an eye
 or an ear.
 
+The rung list below is the published order of record. The
+buildable tasks for every rung, each one small enough for a builder
+lane to pick up without inventing scope, live in
+[docs/PATH-TO-1.0.md](docs/PATH-TO-1.0.md) (D-1663, D-1665). That
+file also holds the per-rung Light Show carry-forwards, the Rung 1
+assumptions with their fallbacks, the open decisions, and the risks.
+Where it proposes a different order, the proposal stands beside this
+list (see "Niflheim first" below) and does not replace it until the
+Owner rules.
+
+State at 2026-11-16: Rung 0 has landed (31 tools: `meister_lane_check`
+live, 30 typed seams). Rung 1 has landed on its own branch, not yet
+merged to `main`. That work made Groups 1–2 real, and its gate record
+shows a fresh Niflheim project scaffolded, its cast locked, and a
+census of 44 checked with 0 unverified.
+
 - **Rung 0 — Birth.** This plan; the repository; the rmcp skeleton
   (modern era only) answering discovery with the full annotated
   tool surface as typed seams; bloch birth records for every
@@ -830,6 +846,84 @@ or an ear.
   reinstalled and the landed binary's own version report probed.
   A publish is not complete until the installed thing answers as
   the new version.
+
+### Niflheim first — proposed re-sequencing (awaiting ruling)
+
+Meister's first job is building Niflheim (D-1660). Niflheim's state
+shapes the order:
+
+- floors 1–12 of 18 are landed as code, every floor built
+  structure-first;
+- its content is Rust data;
+- its STAGE scene idiom awaits the Owner's verdict;
+- its combat presentation waits on that verdict.
+
+Read against that state, the published order has three gaps:
+
+- the spine's Freeze and Emit steps have no tools;
+- Rung 4's worked examples need Rung 5's keeper chains;
+- Rung 6's gate names a release handoff that only exists at Rung 8.
+
+The planning pass proposes this order. Every task in it is in
+docs/PATH-TO-1.0.md, and tasks that serve Niflheim directly are
+marked there.
+
+1. **Rung 2** gains the structural half of `meister_level_compose`,
+   so the D-1659 descent law (doors and entry points per floor,
+   descend/ascend) is checked as a graph property at the rung
+   where floors are first authored. It also gains surface profiles
+   (below), because the EFLO waiver covers Rungs 0–1 only.
+2. **Rung 3** gains Freeze (`meister_verdict_record`: the server
+   records the Owner's ruling on a numbered pack, it never makes
+   one) and Emit (`meister_emit`, starting with a Bevy/Rust content
+   emitter). This is the first rung where a floor's structure and
+   its words both exist, and the first where Meister can hand
+   Niflheim something that runs. It adds two tools beyond this
+   plan, so it needs a ruling.
+3. **Asset routing** (Rung 5 above) moves ahead of the first pack.
+   A worked example "produced end to end" includes media, and an
+   asset without a complete keeper chain is not a keeper.
+4. **The first-packs rung splits.** Role Playing × Educational,
+   with the teaching layer v1, comes next, and its worked example
+   is a Niflheim floor. Puzzle and Narrative move to the head of
+   Rung 7: neither is on Niflheim's path, Puzzle's worked example
+   already ships, and Narrative has no named worked example yet.
+5. **Rung 6** keeps its place. Its gate is re-worded to a
+   release-eligibility predicate, and Rung 8's preflight later
+   re-proves the same fixture.
+6. **Rungs 8 and 9** and the TUI stand where they are.
+
+Until Niflheim's next floor can be emitted, the proposed way of
+working is shadow mode: each new floor's records are authored in
+Meister alongside the hand build, and the census checks the hand
+build against them.
+
+### Keeping the surface usable (EFLO)
+
+The served `tools/list` measures 26,229 bytes at Rung 0. The fleet
+budget is 2,500 tokens on a real tokenizer, and Meister's surface
+has so far been counted only by a bytes-per-token estimate. Either
+way it is two to three times over, and every live rung adds to it.
+
+The standing mitigation becomes concrete at Rung 2, under the
+estate's trigger-scoped loading doctrine: deterministic config
+decides what *can* load, the triggered skill decides what *should*,
+and `decide()` with the lane gate decides what is permitted.
+
+- **Profiles.** A declared profile list in the catalog is selected
+  at launch. An unknown profile refuses to start.
+- **The default is `core`.** That profile is four read-only tools:
+  the lane check, project list and inspect, and the census.
+- **Other profiles.** The `canon`, `systems`, `narrative`,
+  `assets`, `qa`, and `release` profiles each have a triggering
+  skill. A `niflheim-floor` bundle covers floor sessions.
+- **Out-of-profile calls.** A call to a tool outside the loaded
+  profile is told which profile carries it.
+- **Packs add zero tools.** Their verbs are record kinds behind the
+  generic tools, so thirteen packs never become thirteen tool sets.
+- **Measurement.** Every profile is measured on a real tokenizer at
+  every rung gate. A profile over budget is split or waived by
+  ruling. Descriptions are not shortened to chase the number.
 
 ### What 1.0 means
 
