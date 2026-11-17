@@ -39,7 +39,7 @@ its rows as work moves.
 
 | ID | Task | Lane | Status | Notes |
 |---|---|---|---|---|
-| PK-01 | Pack mechanism: packs as data plus emitters, never tools; invariant test | CLAUDE | TODO | Architecture piece of the rung. Starts when the phlow cap-fix lane lands. |
+| PK-01 | Pack mechanism: packs as data plus emitters, never tools; invariant test | CLAUDE | CLAIMED (CLAUDE, 2026-11-17) | Architecture piece of the rung. Starts when the phlow cap-fix lane lands. Branch `pax/rung5-pack-mechanism-20261117`. |
 | RPG-01 | Role Playing pack v1 data | CLAUDE | TODO | Depends on PK-01. |
 | RPG-02 | RPG playtest generators (traverse floors as a player would) | CLAUDE + LOCAL | TODO | LOCAL runs traversal batches; results are evidence, not verdicts. |
 | TEACH-01 | Teaching layer v1 | CLAUDE | TODO | Both kinds land in the Educational secondary pack. |
