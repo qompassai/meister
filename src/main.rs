@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 mod catalog;
+mod graph;
 mod guard;
 mod hash;
 mod lane;
