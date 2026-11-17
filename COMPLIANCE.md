@@ -1,9 +1,10 @@
 # Spec compliance — meister
 
-Status: version 0.1.0 (Rung 0 — Birth, plan of record README.md).
+Status: version 0.2.0 (Rung 1 — Scaffolding and canon, plan of
+record README.md).
 Basis: stdio behaviour below is exercised by the in-repo suites
 (unit, stdio conformance, manifest agreement) run on primo at
-the Rung 0 gate; per-client tolerance (MCP Inspector, rose,
+the Rung 1 gate; per-client tolerance (MCP Inspector, rose,
 phlow) has NOT been run at this rung and is not claimed.
 
 ## 1. Lifecycle and version negotiation
@@ -17,7 +18,9 @@ protocolVersion`). A stdio era guard owns the transport end:
 naming 2026-07-28, and `tools/list` without the `_meta` probe is
 refused the same way. Stateless operation: no session state is
 kept; the guard forwards only discover, ping, tools/list, and
-tools/call.
+tools/call. Since Rung 1 the server holds an on-disk record
+store (§3, §7) — records persist between sessions; dispatch
+itself keeps no session state.
 
 ## 2. Transport — stdio
 
@@ -31,10 +34,19 @@ carries protocol frames only.
 
 31 tools served, all declared in `src/catalog.rs`: three per
 README tool group (groups 1–10) plus `meister_lane_check`
-(group 0, the live lane gate). 30 are typed seams at Rung 0 —
-each returns a structured `not_implemented` tool error naming
-the tool, its group, and the rung that makes it real.
-`meister_lane_check` is fully live (§4).
+(group 0, the live lane gate). At Rung 1, seven are live: the
+six Group 1–2 tools and `meister_lane_check` (§4). The Group
+1–2 handlers are real implementations over an on-disk record
+store (`src/store.rs`): project scaffolding with genre pack
+selection at birth and canon facts carried from birth; cast
+identity records with the estate's canon governance and
+identity locks (D-1410); and the canon census, graduated
+server-side from the lumen pipes' census — every census claim
+recomputed from its source artifact and SHA-256 (D-713), the
+census failing closed on any unverified claim. The remaining
+24 tools are typed seams — each returns a structured
+`not_implemented` tool error naming the tool, its group, and
+the rung that makes it real.
 
 Completeness at birth, asserted by the conformance suite over
 the wire: every tool carries a complete input schema (explicit
@@ -61,6 +73,20 @@ re-measured at every rung gate; per-tool payload is dominated by
 the repeated lane envelope on record-carrying tools, which is a
 lane-law cost, not decoration.
 
+Rung 1 re-measurement (like-for-like, compact JSON of the
+served tools array, same code path both sides): 24,283 B at
+Rung 0 → 25,706 B at Rung 1 — a delta of +1,423 B (+5.9%),
+cross-checked on the wire (full `tools/list` response lines:
+24,379 B → 25,802 B, the same +1,423 B). The delta is entirely
+Group 1–2 schema growth: `meister_project_create` gained
+`project_id`, `secondary_genre_packs`, and `canon` inputs and a
+richer output; `meister_canon_check` gained the census output
+shape (verdict, counts, per-claim checks); the cast tools'
+outputs carry record paths and counts. (The Rung 0 figure of
+26,229 B above was recorded on a different basis and is kept as
+the historical record; the compact-array basis is the one
+carried forward.) The waiver stays open and gated.
+
 ## 4. Lane law enforcement
 
 The gate is live from this commit (`src/lane.rs`). Every
@@ -73,8 +99,9 @@ before any handler logic and before any mutation:
   → `lane_mismatch` (records never cross lanes, either way);
 - missing/unreadable label or origin, unrecognised values, or
   missing evidence → `lane_unclassified`;
-- only qompass + sfw + evidence proceeds (to the seam at
-  Rung 0).
+- only qompass + sfw + evidence proceeds (to the handler;
+  Groups 1–2 handlers are live since Rung 1, the rest are
+  seams naming their rung).
 
 Refusals are `isError` tool results whose structured body names
 the offending record ids. The envelope's `content_label` is
@@ -94,6 +121,15 @@ unknown method, malformed JSON, oversized line). A client can
 therefore always distinguish "the server refused this work" from
 "the request was not protocol".
 
+Since Rung 1 the store adds its own typed codes, same shape:
+`invalid_input` (malformed call arguments, bad ids),
+`invalid_record` (a record or lock violating the canon
+governance or lock contract), `not_found`, `conflict` (a
+duplicate create, never an overwrite), `identity_lock_conflict`
+(a different lock over a locked character), `canon_unverified`
+(the census failed closed; the full census rides in the error
+body), and `io`.
+
 ## 6. Resources, prompts, other surfaces
 
 None at Rung 0: the guard answers resource and prompt methods
@@ -107,17 +143,23 @@ them.
 No secrets are read, stored, or served: group 10 manages
 credential REFERENCES and status by schema design (a
 `credential_ref` string pattern, never a value), and the server
-takes no CLI arguments and reads no environment configuration.
-At Rung 0 the server writes nothing to disk at all — handlers
-are seams behind the lane gate, and the conformance suite
-asserts refused and seam calls leave the working directory
-untouched. Input bounds live in the schemas (list limits, id
-patterns) and in the guard's line bound.
+takes no CLI arguments. Since Rung 1 the server holds a record
+store on disk: the root is `MEISTER_PROJECTS_ROOT` when set,
+else `$XDG_DATA_HOME/meister/projects`, else
+`$HOME/.local/share/meister/projects` — the only environment
+the server reads. Writes are confined to that root: record ids
+are validated slugs (no path traversal), records are written
+atomically (temp + rename) only after full validation, and all
+reads are bounded (1 MiB per record, 32 MiB per census source).
+The store holds project and cast records only — no credentials,
+no media bytes (media is referenced by path + SHA-256, never
+copied). The conformance suite asserts refused and seam calls
+write nothing, in the working directory or the store root.
 
 ## 8. Packaging, registry, and the agent card
 
 `server.json` carries the registry identity `ai.qompass/meister`,
-version 0.1.0, repository and website. Packages are OMITTED:
+version 0.2.0, repository and website. Packages are OMITTED:
 nothing is published yet, and no package URL or hash is invented;
 packages are added at Rung 9 publication.
 
@@ -166,7 +208,48 @@ Meister's records use its own plan-of-record vocabulary
 (`qompass`). The envelope shape and field discipline are bloch's;
 the lane value is Meister's, by its README.
 
-## 10. Test evidence at Rung 0
+Rung 1 adds promotion records under `records/rung1/` for the
+five tools whose served definitions changed, same envelope and
+convention; `meister_project_list`'s definition is unchanged
+byte-for-byte (its Rung 1 hash equals its birth hash), so it
+has no promotion record — recorded in records/README.md rather
+than smoothed over. Live bloch intake was not called at this
+rung; the records are the intake-ready artifacts.
+
+## 10. Test evidence
+
+### Rung 1 (2026-11-16)
+
+- `cargo test`: 51 passed, 0 failed — 36 unit (era guard, lane
+  gate, catalog, dispatch, SHA-256 vectors, and 11 store tests:
+  roundtrip, pagination, governance refusals, lock refusals,
+  conflicting relock, tampered-source census failure), 13 stdio
+  conformance (the Rung 0 ten plus the full
+  create → cast → lock → census flow over the wire, a
+  tampered-source census failure over the wire, and wire-level
+  conflict/traversal/not-found refusals), 2 manifest agreement.
+- `cargo clippy --all-targets -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- Theodolite LSP validation: copy-route protocol — byte-identical
+  copy of the rung tree in a throwaway git repo, bacon-ls
+  producer first, rust-analyzer diagnostics: all seven src files
+  (main, server, catalog, lane, guard, hash, store) at zero
+  errors; planted-error control in src/lane.rs seen as exactly
+  one E0308 while an untouched file stayed at zero; witness
+  restored byte-identical and all files zero again after a
+  fresh-file refresh trigger. Verdict: PASS. Record: primo
+  ~/.local/share/pax/meister-rung1-gate-20261116/gates/theodolite-record.json.
+- The rung gate (brief D-1660): the Niflheim verdict pack —
+  scaffold transcript, both cast lock records, census output
+  with sources, adversarial probes — at primo
+  ~/.local/share/pax/meister-rung1-gate-20261116/ (mirrored in
+  the workspace gate directory). Census: 44 checked / 0
+  unverified (3 canon facts, 2 cast records, 2 identity locks,
+  2 governing references, 3 media-chain entries).
+- Client tolerance (Inspector / rose / phlow): NOT RUN; named,
+  not claimed.
+
+### Rung 0 (2026-11-16)
 
 - `cargo test`: 33 passed, 0 failed — 21 unit (era guard 6,
   lane gate 7, catalog 3, dispatch 5), 10 stdio conformance
