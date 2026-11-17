@@ -93,6 +93,12 @@ fn main() -> ExitCode {
     for arg in std::env::args().skip(1) {
         eprintln!("meister: ignoring unknown arg {arg}");
     }
+    // The profile declarations are checked before anything is
+    // served: an inconsistent catalog refuses to start.
+    if let Err(e) = catalog::check_declared_profiles() {
+        eprintln!("meister: refusing to start: profile_catalog_invalid: {e}");
+        return ExitCode::FAILURE;
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

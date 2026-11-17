@@ -95,6 +95,43 @@ the built binary over stdio. The full 31-tool surface measures
 supersedes the 4-bytes-per-token estimate above; `EFLO.md` is
 the measurement of record from here on.
 
+Surface profiles (EFLO-02). The catalog declares the profiles
+the surface is served in (`PROFILES` in `src/catalog.rs`); each
+tool also names the base profiles that carry it, and a catalog
+check holds the two entries in agreement — the server refuses
+to start on a declaration that fails it. Every profile serves
+`core`; a bundle is a union of base profiles and never carries
+`release`. Membership:
+
+- `core` (4, all read-only): `meister_lane_check`,
+  `meister_project_list`, `meister_project_inspect`,
+  `meister_canon_check`.
+- `canon` (7): core + `meister_project_create`,
+  `meister_cast_add`, `meister_cast_lock`.
+- `systems` (8): core + Group 3 (`meister_scene_define`,
+  `meister_system_define`, `meister_scene_validate`) +
+  `meister_level_compose`.
+- `narrative` (9): core + Groups 4–5 except
+  `meister_level_compose` (`meister_dialogue_author`,
+  `meister_dialogue_get`, `meister_reaction_set`,
+  `meister_story_define`, `meister_playtest_generate`). The
+  Rung 3 freeze and emit tools join this profile when they
+  exist; they are not declared before then.
+- `assets` (7): core + Group 7 (`meister_asset_intake`,
+  `meister_asset_route`, `meister_asset_chain_get`).
+- `qa` (10): core + Groups 6 and 8 (`meister_rating_record`,
+  `meister_accessibility_check`, `meister_content_summary`,
+  `meister_playtest_define`, `meister_replay_check`,
+  `meister_defect_record`).
+- `release` (10): core + Groups 9–10 (`meister_channel_list`,
+  `meister_release_prepare`, `meister_preflight_run`,
+  `meister_account_register`, `meister_account_inspect`,
+  `meister_account_verify`). Never in a bundle: it is
+  credential-adjacent and stays opt-in.
+- `niflheim-floor` (bundle, 13): core ∪ `systems` ∪
+  `narrative`.
+- `full` (31): every tool. For conformance and audit only.
+
 ## 4. Lane law enforcement
 
 The gate is live from this commit (`src/lane.rs`). Every
