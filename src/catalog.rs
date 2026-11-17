@@ -7,6 +7,8 @@
 //! output schema for its success shape, and behaviour annotations.
 //! Handlers are seams until their rung lands (README §"The path to
 //! 1.0"); the seam error names the rung that makes the tool real.
+//! Rung 1 landed the Group 1–2 handlers (see `store`); the seam
+//! count shrinks rung by rung.
 //!
 //! Record-carrying tools take an `envelope` argument — the lane
 //! stamp of the record they carry (`record_id`, `origin_lane`,
@@ -178,10 +180,21 @@ pub fn specs() -> Vec<ToolSpec> {
                         s_enum(&["bevy", "godot", "renpy", "unity", "unreal"]),
                     ),
                     ("genre_pack", s_enum(GENRE_PACKS)),
+                    ("project_id", s()),
+                    ("secondary_genre_packs", arr(s_enum(GENRE_PACKS))),
+                    ("canon", arr(free_obj())),
                 ],
                 &["name", "engine", "genre_pack"],
             ),
-            output: out_schema(&[("project_id", s()), ("engine", s()), ("genre_pack", s())]),
+            output: out_schema(&[
+                ("project_id", s()),
+                ("engine", s()),
+                ("genre_pack", s()),
+                ("secondary_genre_packs", arr(s())),
+                ("canon_fact_count", integer()),
+                ("status", s()),
+                ("project_path", s()),
+            ]),
             annotations: write_ann(),
         },
         ToolSpec {
@@ -189,15 +202,20 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 1,
             rung: 1,
             record_carrying: false,
-            description: "Inspect one project record: engine shell, metadata, and lane stamps.",
+            description: "Inspect one project record: engine shell, metadata, lane stamps, and cast and canon counts computed from the record set.",
             input: read_input(&[("project_id", s())], &["project_id"]),
             output: out_schema(&[
                 ("project_id", s()),
                 ("name", s()),
                 ("engine", s()),
                 ("genre_pack", s()),
+                ("secondary_genre_packs", arr(s())),
                 ("origin_lane", s()),
                 ("content_label", s()),
+                ("status", s()),
+                ("cast_count", integer()),
+                ("canon_fact_count", integer()),
+                ("project_path", s()),
             ]),
             annotations: read_ann(),
         },
@@ -239,7 +257,13 @@ pub fn specs() -> Vec<ToolSpec> {
                 ],
                 &["project_id", "character_id", "identity"],
             ),
-            output: out_schema(&[("character_id", s()), ("status", s())]),
+            output: out_schema(&[
+                ("project_id", s()),
+                ("character_id", s()),
+                ("status", s()),
+                ("governing_reference_count", integer()),
+                ("record_path", s()),
+            ]),
             annotations: write_ann(),
         },
         ToolSpec {
@@ -257,9 +281,11 @@ pub fn specs() -> Vec<ToolSpec> {
                 &["project_id", "character_id", "lock"],
             ),
             output: out_schema(&[
+                ("project_id", s()),
                 ("character_id", s()),
                 ("locked", boolean()),
                 ("lock_hash", s()),
+                ("record_path", s()),
             ]),
             annotations: write_ann(),
         },
@@ -268,12 +294,16 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 2,
             rung: 1,
             record_carrying: false,
-            description: "Run the canon census over a project: counts checked and unverified, computed by the server. Declares no visual PASS; the Owner's eye is the verdict.",
+            description: "Run the canon census over a project: every claim recomputed from its source artifact and SHA-256 (D-713); any unverified claim fails the census closed with the full census in the error body. Declares no visual PASS; the Owner's eye is the verdict.",
             input: read_input(&[("project_id", s())], &["project_id"]),
             output: out_schema(&[
                 ("project_id", s()),
                 ("checked", integer()),
                 ("unverified", integer()),
+                ("verdict", s()),
+                ("counts", free_obj()),
+                ("checks", arr(free_obj())),
+                ("failures", arr(s())),
             ]),
             annotations: read_ann(),
         },

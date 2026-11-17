@@ -22,8 +22,10 @@
 
 mod catalog;
 mod guard;
+mod hash;
 mod lane;
 mod server;
+mod store;
 
 use std::process::ExitCode;
 use std::sync::Arc;

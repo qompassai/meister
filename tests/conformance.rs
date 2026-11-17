@@ -5,20 +5,45 @@
 //! `server/discover`, every request carries `_meta` naming
 //! protocol 2026-07-28, and legacy `initialize` contact is refused
 //! with the typed `-32022`. The lane gate is exercised end to end:
-//! an sfw/qompass envelope reaches the seam; nsfw and unclassified
-//! envelopes are refused before it, and a refused run writes
-//! nothing anywhere.
+//! an sfw/qompass envelope reaches the handlers; nsfw and
+//! unclassified envelopes are refused before them, and a refused
+//! run writes nothing anywhere. Since Rung 1 the Group 1–2 tools
+//! are real: every session runs against a throwaway store root
+//! (`MEISTER_PROJECTS_ROOT`), and the full
+//! create → cast → lock → census flow is driven over the wire.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const META: &str = r#""_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "meister-test", "version": "0"}, "io.modelcontextprotocol/clientCapabilities": {}}"#;
 
+/// SHA-256 of the fixture bytes `abc` (FIPS 180-4 example vector).
+const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+static STORE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn fresh_store() -> PathBuf {
+    let seq = STORE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("meister-test-store-{}-{seq}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
 fn rpc_in(cwd: &std::path::Path, requests: &[&str]) -> Vec<serde_json::Value> {
+    rpc_store(cwd, &fresh_store(), requests)
+}
+
+fn rpc_store(
+    cwd: &std::path::Path,
+    store: &std::path::Path,
+    requests: &[&str],
+) -> Vec<serde_json::Value> {
     let bin = env!("CARGO_BIN_EXE_meister");
     let mut child = Command::new(bin)
         .current_dir(cwd)
+        .env("MEISTER_PROJECTS_ROOT", store)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -147,18 +172,20 @@ fn lane_check_allows_sfw_qompass_over_the_wire() {
 
 #[test]
 fn sfw_envelope_reaches_the_seam() {
+    // A Group 3 seam (Rung 2): the allowed envelope still falls
+    // through the gate to the seam error, unchanged by Rung 1.
     let req = call(
         1,
-        "meister_project_create",
+        "meister_scene_define",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "name": "First Light", "engine": "bevy",
-                           "genre_pack": "puzzle"}),
+                           "project_id": "p1", "scene_id": "s1",
+                           "graph": {}}),
     );
     let resps = rpc(&[&discover(), &req]);
     assert_eq!(resps[1]["result"]["isError"], true);
     let body = result_json(&resps[1]);
     assert_eq!(body["error"]["code"], "not_implemented");
-    assert_eq!(body["error"]["rung"], 1);
+    assert_eq!(body["error"]["rung"], 2);
 }
 
 // ---------- adversarial ----------
@@ -245,6 +272,7 @@ fn refused_and_seam_calls_write_nothing() {
         std::env::temp_dir().join(format!("meister-rung0-cwd-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let store = fresh_store();
     let bad = call(
         1,
         "meister_project_create",
@@ -254,15 +282,244 @@ fn refused_and_seam_calls_write_nothing() {
     );
     let good = call(
         2,
-        "meister_project_create",
+        "meister_scene_define",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "name": "x", "engine": "bevy",
-                           "genre_pack": "puzzle"}),
+                           "project_id": "p1", "scene_id": "s1",
+                           "graph": {}}),
     );
-    let _ = rpc_in(&dir, &[&discover(), &bad, &good]);
+    let _ = rpc_store(&dir, &store, &[&discover(), &bad, &good]);
     let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
     assert!(entries.is_empty(), "server wrote into its cwd: {entries:?}");
+    assert!(
+        !store.exists(),
+        "a refused call and a seam call created the store root"
+    );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------- Rung 1: the live Group 1–2 flow, over the wire ----------
+
+/// Write the fixture source file (bytes `abc`) and return its path.
+fn fixture_file(tag: &str) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("meister-wire-fixture-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("source.txt");
+    std::fs::write(&file, b"abc").unwrap();
+    file
+}
+
+fn wire_identity(source: &std::path::Path) -> serde_json::Value {
+    let p = source.display().to_string();
+    serde_json::json!({
+        "display_name": "Warden",
+        "role": "keeper of the first floor",
+        "model_scheme": "single_model",
+        "governing_references": [
+            {"id": "sheet", "kind": "sprite_sheet", "path": p, "sha256": ABC_SHA,
+             "status": "canonical", "source": "wire fixture"}
+        ],
+        "appearance_references": [
+            {"id": "sheet-view", "path": p, "sha256": ABC_SHA, "source": "wire fixture"}
+        ],
+        "rig_references": [
+            {"id": "rig", "path": p, "sha256": ABC_SHA, "source": "wire fixture"}
+        ],
+        "forms": [
+            {"form_id": "sheet", "kind": "stage_sheet", "design_id": "warden-ns1",
+             "canon_status": "canonical", "governing_reference_id": "sheet"}
+        ],
+        "media_chain": [
+            {"path": p, "snapshot_id": "snap-1", "sha256": ABC_SHA,
+             "status": "candidate", "verdict": "pending"}
+        ],
+        "quarantined_variants": []
+    })
+}
+
+fn wire_lock(source: &std::path::Path) -> serde_json::Value {
+    let p = source.display().to_string();
+    let sourced = |description: &str| {
+        serde_json::json!({"description": description, "source_artifact": p,
+                           "source_sha256": ABC_SHA})
+    };
+    serde_json::json!({
+        "form_id": "sheet",
+        "governing_reference_id": "sheet",
+        "silhouette": sourced("hooded triangle"),
+        "palette": [
+            {"name": "accent", "hex": "#B82921", "source_artifact": p,
+             "source_sha256": ABC_SHA}
+        ],
+        "face_proportions": sourced("head 30x36"),
+        "body_proportions": sourced("height 234 units"),
+        "thumbnail_recognizability": {
+            "width_px": 48, "height_px": 64, "recognisable": true,
+            "evidence": "wire fixture", "source_artifact": p,
+            "source_sha256": ABC_SHA
+        },
+        "ruling": "D-1410 wire test"
+    })
+}
+
+fn wire_create(store: &std::path::Path, source: &std::path::Path) -> Vec<serde_json::Value> {
+    let create = call(
+        1,
+        "meister_project_create",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+        "name": "Wire Game", "engine": "bevy",
+        "genre_pack": "role_playing",
+        "canon": [{
+            "id": "floors",
+            "statement": "the descent has eighteen floors",
+            "value": 18,
+            "source_artifact": source.display().to_string(),
+            "source_sha256": ABC_SHA,
+        }]}),
+    );
+    rpc_store(&std::env::temp_dir(), store, &[&discover(), &create])
+}
+
+#[test]
+fn rung1_full_flow_over_the_wire() {
+    let store = fresh_store();
+    let source = fixture_file("flow");
+    let resps = wire_create(&store, &source);
+    assert_eq!(resps[1]["result"]["isError"], false);
+    let created = result_json(&resps[1]);
+    assert_eq!(created["project_id"], "wire-game");
+    assert_eq!(created["canon_fact_count"], 1);
+    assert!(store.join("wire-game/project.json").is_file());
+
+    // Dependent calls go in separate sessions: rmcp dispatches
+    // pipelined requests concurrently, so a lock must not share
+    // a pipeline with the add it depends on.
+    let add = call(
+        2,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "identity": wire_identity(&source)}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
+    let added = result_json(&resps[1]);
+    assert_eq!(added["status"], "candidate", "cast_add body: {added}");
+    let lock = call(
+        3,
+        "meister_cast_lock",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "lock": wire_lock(&source)}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &lock]);
+    let locked = result_json(&resps[1]);
+    assert_eq!(locked["locked"], true, "cast_lock body: {locked}");
+    assert_eq!(locked["lock_hash"].as_str().unwrap().len(), 64);
+    let check = call(
+        4,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let inspect = call(
+        5,
+        "meister_project_inspect",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let resps = rpc_store(
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &check, &inspect],
+    );
+    // Sorted by id: [discover(0), check(4), inspect(5)].
+    let census = result_json(&resps[1]);
+    assert_eq!(census["unverified"], 0, "census body: {census}");
+    assert_eq!(census["verdict"], "pass");
+    assert_eq!(census["counts"]["cast_records"], 1);
+    assert_eq!(census["counts"]["canon_facts"], 1);
+    assert_eq!(result_json(&resps[2])["cast_count"], 1);
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(store.join("wire-game/cast/warden.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["status"], "identity_locked");
+    assert_eq!(record["identity_lock"]["lock_hash"], locked["lock_hash"]);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn rung1_tampered_source_fails_the_census_over_the_wire() {
+    let store = fresh_store();
+    let source = fixture_file("tamper");
+    let _ = wire_create(&store, &source);
+    let add = call(
+        2,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "identity": wire_identity(&source)}),
+    );
+    let _ = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
+    let lock = call(
+        3,
+        "meister_cast_lock",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "lock": wire_lock(&source)}),
+    );
+    let _ = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &lock]);
+    std::fs::write(&source, b"tampered").unwrap();
+    let check = call(
+        4,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &check]);
+    assert_eq!(resps[1]["result"]["isError"], true);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "canon_unverified");
+    assert!(body["error"]["census"]["unverified"].as_u64().unwrap() > 0);
+    assert_eq!(body["error"]["census"]["verdict"], "review");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn rung1_refusals_over_the_wire() {
+    let store = fresh_store();
+    let source = fixture_file("refusals");
+    let _ = wire_create(&store, &source);
+    // Duplicate create: conflict, not overwrite.
+    let dup = call(
+        2,
+        "meister_project_create",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "name": "Wire Game", "engine": "bevy",
+                           "genre_pack": "role_playing"}),
+    );
+    // Traversal id: refused before it can become a path.
+    let traversal = call(
+        3,
+        "meister_project_inspect",
+        serde_json::json!({"project_id": "../escape"}),
+    );
+    // Cast add to a project that does not exist.
+    let ghost = call(
+        4,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "ghost", "character_id": "warden",
+                           "identity": wire_identity(&source)}),
+    );
+    let resps = rpc_store(
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &dup, &traversal, &ghost],
+    );
+    assert_eq!(result_json(&resps[1])["error"]["code"], "conflict");
+    assert_eq!(result_json(&resps[2])["error"]["code"], "invalid_input");
+    assert_eq!(result_json(&resps[3])["error"]["code"], "not_found");
+    assert!(!store.join("escape").exists());
+    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]

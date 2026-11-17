@@ -1,0 +1,26 @@
+{
+  "outcome_id": "rung1-meister_project_create",
+  "server": "meister",
+  "asked": "Rung 1 promotion of the meister_project_create tool schema (group 1, Project scaffolding): typed seam to live implementation over the on-disk record store.",
+  "produced": [
+    {
+      "path": "tools/list#meister_project_create",
+      "sha256": "8d336b4f700fd1e8314173f9ea165226b4c157669ea161187d18fdcbc0299839"
+    }
+  ],
+  "result": "ok",
+  "verification": "self_reported",
+  "cost": {
+    "wall_secs": 0,
+    "tokens": 0,
+    "disk_bytes": 0
+  },
+  "skills": [
+    "tiger-style-mcp",
+    "tiger-style-rust"
+  ],
+  "origin_lane": "qompass",
+  "content_label": "sfw",
+  "evidence": "README.md \u00a7\"The path to 1.0\" (Rung 1 \u2014 Scaffolding and canon); gate pack meister-rung1-gate-20261116 (Niflheim census 44 checked / 0 unverified)",
+  "recorded_at_epoch": 1794886163
+}

@@ -17,6 +17,18 @@ estate's one finished-run record schema): `outcome_id`, `server`,
 served definition (sorted keys, compact separators), so a later
 surface can be diffed against its birth state.
 
+## rung1/
+
+One promotion record per tool whose served definition changed
+at Rung 1, in the same envelope and with the same `produced`
+convention: the SHA-256 of the tool's canonical served
+definition after the rung landed, diffable against its birth
+record. Five of the six Group 1–2 tools changed (their schemas
+grew with the live implementations). `meister_project_list` is
+absent on purpose: its schema did not change — its Rung 1
+definition hash is byte-identical to its birth record — only
+its handler became real.
+
 One vocabulary note, recorded rather than smoothed over: bloch's
 intake gate parses `origin_lane` as `general|restricted`, while
 Meister's plan of record stamps `origin_lane: qompass`. These

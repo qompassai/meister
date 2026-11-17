@@ -4,20 +4,22 @@
 //!
 //! 1. `meister_lane_check` answers live — it IS the gate, exposed
 //!    so the gate is demonstrable without storing anything.
-//! 2. Every other catalog tool is a typed seam. For a
-//!    record-carrying tool the lane gate (see `lane`) runs FIRST,
-//!    before any handler logic: a refusal returns the typed lane
-//!    error; an allowed envelope falls through to the seam error,
-//!    which names the rung that makes the tool real.
+//! 2. Every other catalog tool dispatches after the lane gate.
+//!    For a record-carrying tool the lane gate (see `lane`) runs
+//!    FIRST, before any handler logic: a refusal returns the
+//!    typed lane error; an allowed envelope proceeds. Since
+//!    Rung 1 the Group 1–2 tools are real implementations over
+//!    the on-disk record store (see `store`); the remaining
+//!    groups are typed seams naming their rung.
 //! 3. An unknown name returns `unknown tool` as an `isError`
 //!    result (execution failure, never a protocol error — Tiger
 //!    Style MCP Rule 6).
 //!
-//! The server is stateless and holds no store at Rung 0: nothing
-//! is written anywhere, by any call, allowed or refused. Modern
-//! era only: the era guard (see `guard`) owns the stdio front
-//! door, and `supported_protocol_versions` pins this handler to
-//! 2026-07-28.
+//! The dispatch itself is stateless; the store root is resolved
+//! per call from the environment contract (`store::ENV_ROOT`).
+//! Modern era only: the era guard (see `guard`) owns the stdio
+//! front door, and `supported_protocol_versions` pins this
+//! handler to 2026-07-28.
 
 use std::borrow::Cow;
 
@@ -32,6 +34,7 @@ use serde_json::{Value, json};
 
 use crate::catalog::{self, ToolSpec};
 use crate::lane::{self, GateOutcome};
+use crate::store::{Store, StoreError};
 
 fn text_result(value: &Value, is_error: bool) -> CallToolResult {
     let content = vec![ContentBlock::text(value.to_string())];
@@ -65,9 +68,28 @@ fn seam_result(spec: &ToolSpec) -> CallToolResult {
     )
 }
 
+/// A store outcome as a tool result: success carries the
+/// operation's body; a failure carries the typed store code, the
+/// reason, and — for an unverified census — the census itself,
+/// so a caller sees which claims failed (D-713: never a bare
+/// refusal where the evidence is the point).
+fn store_result(outcome: Result<Value, StoreError>) -> CallToolResult {
+    match outcome {
+        Ok(body) => text_result(&body, false),
+        Err(e) => {
+            let mut error = json!({"code": e.code, "message": e.message});
+            if let Some(census) = e.census {
+                error["census"] = census;
+            }
+            text_result(&json!({"error": error}), true)
+        }
+    }
+}
+
 /// The lane refusal answer: typed code, the offending record id,
-/// and the gate's reason. Produced before any mutation — at Rung 0
-/// there is no state to mutate, and the refusal path writes none.
+/// and the gate's reason. Produced before any mutation: the lane
+/// gate runs before the store is touched, and the refusal path
+/// writes nothing.
 fn lane_refusal(code: &str, reason: &str, record_id: &str) -> CallToolResult {
     text_result(
         &json!({"error": {
@@ -94,7 +116,17 @@ fn call_tool(name: &str, args: &Value) -> CallToolResult {
             return lane_refusal(code, &reason, lane::record_id(&envelope));
         }
     }
-    seam_result(&spec)
+    // Rung 1: Groups 1–2 are real. Every other group stays a seam.
+    let store = Store::from_env();
+    match name {
+        "meister_project_create" => store_result(store.create_project(args)),
+        "meister_project_inspect" => store_result(store.inspect_project(args)),
+        "meister_project_list" => store_result(store.list_projects(args)),
+        "meister_cast_add" => store_result(store.add_cast(args)),
+        "meister_cast_lock" => store_result(store.lock_cast(args)),
+        "meister_canon_check" => store_result(store.canon_census(args)),
+        _ => seam_result(&spec),
+    }
 }
 
 /// The server handler. Dispatch is stateless; it runs on a
@@ -191,13 +223,17 @@ mod tests {
 
     #[test]
     fn allowed_envelope_reaches_the_seam() {
-        let args = json!({"envelope": good_envelope(), "name": "First Light",
-                          "engine": "bevy", "genre_pack": "puzzle"});
-        let result = call_tool("meister_project_create", &args);
+        // A Group 3 seam (Rung 2): the allowed envelope falls
+        // through the gate to the seam error, unchanged.
+        let args = json!({"envelope": good_envelope(),
+                          "project_id": "first-light",
+                          "scene_id": "floor-01",
+                          "graph": {}});
+        let result = call_tool("meister_scene_define", &args);
         assert!(result.is_error.unwrap_or(false));
         let body = result_json(&result);
         assert_eq!(body["error"]["code"], "not_implemented");
-        assert_eq!(body["error"]["rung"], 1);
+        assert_eq!(body["error"]["rung"], 2);
     }
 
     // ---------- adversarial ----------
