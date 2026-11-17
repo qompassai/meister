@@ -449,3 +449,80 @@ rung; the records are the intake-ready artifacts.
   ~/.local/share/pax/meister-gate-20261116/gates/theodolite-record.json.
 - Client tolerance (Inspector / rose / phlow): NOT RUN; named,
   not claimed.
+
+### GATE-2 evidence (Rung 2, 2026-11-17)
+
+Recorded on branch `pax/rung2-systems-profiles-20261116` at
+the GATE-2 commit; the branch is unmerged and unpublished
+under the night authorization that built it.
+
+- Standing gates on the final tree: full suite **172 passed,
+  0 failed** (130 unit + 23 conformance + 7 eflo_measure + 1
+  malformed + 7 manifest_agreement + 4 store_lock); clippy
+  `--all-targets -D warnings` clean; `cargo fmt --check`
+  clean.
+- Theodolite (cured copy route; gate records under the
+  night gate directory): EFLO cluster PASS
+  (`theodolite-record-eflo.json`), STORE cluster PASS
+  (`theodolite-record-store.json`), SYS cluster PASS
+  (`theodolite-record-sys.json`: graph.rs, store.rs,
+  server.rs, main.rs, catalog.rs at 0 severity-1 errors,
+  planted E0308 control seen, witness restored
+  sha-identical).
+- EFLO-06: EFLO.md regenerated on the final tree — core
+  815, canon 1,636, systems 1,567, narrative 1,684, assets
+  1,432, qa 1,842, release 1,760, niflheim-floor 2,436 (64
+  under budget), full 5,846 (audit-only; waiver in §3).
+- STORE-01: the lock's two-process evidence (2 × 50
+  interleaved creates, 191.5 ms) is recorded with its task
+  commit; the store_lock suite (4 tests) runs in the
+  standing gate above.
+- SYS-10: 51 fixtures, every one refused with its expected
+  code; the store snapshot is byte-identical afterwards and
+  the server answers a final lane check. Provenance is per
+  fixture: defect classes observed in real local-model
+  output on primo (stringified JSON, type drift,
+  hallucinated references) plus synthetic-classic structural
+  defects. No raw model-generation session was run against
+  meister — the models never called it tonight; that gap
+  between the plan's letter and the corpus's construction
+  is recorded here, not hidden.
+- SYS-11: Floor 12 (The Cells of the Wanting-Nothing)
+  authored through the tools in a throwaway store — flags,
+  both state machines, the prereq DAG, five chamber scenes
+  validated, the level composed under the descent law;
+  census 14 checked / 0 unverified with the design source
+  pinned by SHA-256. Findings in the gate record
+  (`sys11/FINDINGS.md`): recommended prerequisites
+  inexpressible; levels do not reference scenes; nested
+  encounters flatten.
+- CT-01 client-tolerance matrix:
+  - Scripted strict modern-era client (this programme):
+    PASS on core and niflheim-floor — discover, exact
+    tools/list sets (4 and 13), lane check, a typed seam
+    answer, `group_not_loaded` out-of-profile, and the
+    legacy-era probe refused with -32022. Evidence:
+    `ct01.json` in the gate directory.
+  - Estate conformance suite: PASS (23 wire tests,
+    including profile sessions).
+  - Fleet generated-config load test (coordination
+    programme): meister was one of two misses (11/13)
+    because the binary was not installed; it was installed
+    from main `3e6e39d` during this rung, closing the gap.
+  - MCP Inspector (the npx-cached build on primo): CANNOT
+    CONNECT — "Unsupported protocol version". The cached
+    Inspector predates the 2026-07-28 era this fleet
+    serves exclusively (D-113); recorded as a client-side
+    era gap, not a meister defect, and no meister change
+    was made for it.
+  - rose: NOT RUN — rose is a model server; its MCP client
+    lives in diver's Lua and has no standalone primo form
+    to drive.
+  - phlow: NOT RUN — the installed phlow exercises its MCP
+    client through its model-driven agent loop; it has no
+    headless client-probe mode.
+- NIF-01 (shadow mode): SYS-11 is its first exercise in
+  spirit — a floor's structure authored in Meister while
+  the hand build stands. No new floor's canon records were
+  authored into the adopted store tonight; Floor 12's
+  records live in the throwaway proof store.
