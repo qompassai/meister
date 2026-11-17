@@ -198,6 +198,10 @@ duplicate create, never an overwrite), `identity_lock_conflict`
 (the census failed closed; the full census rides in the error
 body), and `io`.
 
+STORE-01 adds `store_busy`: a mutation that could not take the
+store lock within its bound (§7). Nothing is written; the call
+can simply be repeated.
+
 ## 6. Resources, prompts, other surfaces
 
 None at Rung 0: the guard answers resource and prompt methods
@@ -235,6 +239,22 @@ The store holds project and cast records only — no credentials,
 no media bytes (media is referenced by path + SHA-256, never
 copied). The conformance suite asserts refused and seam calls
 write nothing, in the working directory or the store root.
+
+Store lock (STORE-01). Several Meister processes — one per
+surface profile — can share one store root, so every mutation
+holds two locks: the in-process mutex, and an exclusive advisory
+`flock` on `<root>/.meister.lock`. The wait for both together
+is bounded at 10 s; past it the call answers `store_busy` (§5)
+and writes nothing. The lock file is infrastructure, not a
+record: zero bytes, never read, never removed, and outside the
+id space (ids cannot begin with a dot). Every validation for a
+mutation runs once before the lock and again under it, so a
+refused call leaves the store byte-identical — it does not even
+create the lock file. Reads take no lock: records land by atomic
+rename, so a reader sees the old record or the new one. The lock
+is advisory: it excludes Meister processes from each other, not
+a foreign writer that ignores it. `tests/store_lock.rs` drives
+it through real server processes on the build filesystem.
 
 ## 8. Packaging, registry, and the agent card
 

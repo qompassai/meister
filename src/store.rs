@@ -17,6 +17,17 @@
 //! or source file over its bound is refused or reported
 //! unverified, never absorbed.
 //!
+//! Mutations are serialized twice over (STORE-01): by an
+//! in-process `Mutex`, and across processes by an advisory
+//! `flock` on `<root>/.meister.lock` — several Meister processes
+//! (one per surface profile) can share one store. The wait for
+//! both locks together is bounded by `LOCK_WAIT`; a call that
+//! cannot take them in time returns `store_busy` and writes
+//! nothing. The lock file is store infrastructure, not a record:
+//! zero bytes, never read, never removed. Reads take no lock:
+//! every record lands by atomic rename, so a reader sees the old
+//! record or the new one, never a torn one.
+//!
 //! Canon governance mirrors the estate's character-art discipline
 //! (Light Show's canon practice, encoded): one identity record
 //! per character with its governing references named inside the
@@ -32,9 +43,10 @@
 //! census fails closed (D-713).
 
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -58,9 +70,31 @@ const MAX_SECONDARY_PACKS: usize = 12;
 const MAX_RECORD_BYTES: u64 = 1_048_576;
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
-/// Serializes store mutations: dispatch may run calls
+/// Name of the cross-process lock file under the store root. The
+/// leading dot keeps it out of the id space: no project can carry
+/// this name (see `valid_id`).
+const LOCK_FILE: &str = ".meister.lock";
+
+/// Bound on the whole wait for the store lock — the in-process
+/// mutex and the cross-process `flock` together. Past it the call
+/// returns `store_busy`.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// Interval between lock attempts while waiting.
+const LOCK_POLL: Duration = Duration::from_millis(10);
+
+/// Serializes store mutations in-process: dispatch may run calls
 /// concurrently, and a create/lock pair must never interleave.
 static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+/// The store lock, held for one mutation: the in-process mutex
+/// and the `flock` on the lock file. Dropping it releases both —
+/// the `flock` first (closing the file releases it), then the
+/// mutex, the reverse of the order they were taken in.
+struct StoreGuard {
+    _file: File,
+    _process: MutexGuard<'static, ()>,
+}
 
 /// A typed store failure. `census` carries the full census body
 /// when the failure is an unverified census, so the caller sees
@@ -68,7 +102,8 @@ static STORE_LOCK: Mutex<()> = Mutex::new(());
 #[derive(Debug)]
 pub struct StoreError {
     /// Stable typed code (`invalid_input`, `not_found`,
-    /// `conflict`, `invalid_record`, `canon_unverified`, `io`).
+    /// `conflict`, `invalid_record`, `identity_lock_conflict`,
+    /// `canon_unverified`, `store_busy`, `io`).
     pub code: &'static str,
     /// Human-readable reason, safe to return to the caller.
     pub message: String,
@@ -100,15 +135,44 @@ impl StoreError {
 
 type StoreResult<T> = Result<T, StoreError>;
 
+/// A mutation that has passed every validation: the record to
+/// write (none when the call is an idempotent repeat) and the
+/// body to answer with.
+struct Planned {
+    write: Option<(PathBuf, Value)>,
+    body: Value,
+}
+
 /// The store: one root directory holding every project.
 pub struct Store {
     root: PathBuf,
+    /// Bound on the store-lock wait; `LOCK_WAIT` outside tests.
+    lock_wait: Duration,
 }
 
 impl Store {
     /// A store at an explicit root (tests, gate drivers).
     pub fn new(root: PathBuf) -> Self {
-        Store { root }
+        Store {
+            root,
+            lock_wait: LOCK_WAIT,
+        }
+    }
+
+    /// Run one mutation. The plan — every validation for the call,
+    /// read-only — runs twice: once before the lock, so a refused
+    /// call returns having touched nothing, not even the lock
+    /// file; and once under the lock, so the write commits against
+    /// the state it was validated on. Only then is anything
+    /// written.
+    fn mutate(&self, plan: impl Fn() -> StoreResult<Planned>) -> StoreResult<Value> {
+        plan()?;
+        let _guard = lock_store(&self.root, self.lock_wait)?;
+        let planned = plan()?;
+        if let Some((file, record)) = &planned.write {
+            write_json_atomic(file, record)?;
+        }
+        Ok(planned.body)
     }
 
     /// The serving store: root from the environment contract in
@@ -160,7 +224,10 @@ impl Store {
     /// Validates everything before writing anything; a duplicate
     /// project id is a conflict, never an overwrite.
     pub fn create_project(&self, args: &Value) -> StoreResult<Value> {
-        let _guard = lock_store()?;
+        self.mutate(|| self.plan_create_project(args))
+    }
+
+    fn plan_create_project(&self, args: &Value) -> StoreResult<Planned> {
         let name = req_text(args, "name", MAX_NAME_CHARS)?;
         let engine = req_text(args, "engine", MAX_TEXT_CHARS)?;
         if !ENGINES.contains(&engine.as_str()) {
@@ -203,8 +270,7 @@ impl Store {
             "created_by_tool": "meister_project_create",
             "server_version": env!("CARGO_PKG_VERSION"),
         });
-        write_json_atomic(&file, &record)?;
-        Ok(json!({
+        let body = json!({
             "project_id": project_id,
             "engine": engine,
             "genre_pack": genre_pack,
@@ -212,7 +278,11 @@ impl Store {
             "canon_fact_count": record["canon"].as_array().map_or(0, Vec::len),
             "status": "scaffolded",
             "project_path": self.project_dir(&project_id).display().to_string(),
-        }))
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body,
+        })
     }
 
     /// `meister_project_inspect`: one project's record, with the
@@ -291,7 +361,10 @@ impl Store {
     /// `candidate`. The identity is validated against the canon
     /// governance rules before anything is written.
     pub fn add_cast(&self, args: &Value) -> StoreResult<Value> {
-        let _guard = lock_store()?;
+        self.mutate(|| self.plan_add_cast(args))
+    }
+
+    fn plan_add_cast(&self, args: &Value) -> StoreResult<Planned> {
         let project_id = arg_id(args, "project_id")?;
         let character_id = arg_id(args, "character_id")?;
         self.read_project(&project_id)?;
@@ -321,15 +394,18 @@ impl Store {
             "identity": identity,
             "identity_lock": Value::Null,
         });
-        write_json_atomic(&file, &record)?;
-        Ok(json!({
+        let body = json!({
             "project_id": project_id,
             "character_id": character_id,
             "status": "candidate",
             "governing_reference_count":
                 identity["governing_references"].as_array().map_or(0, Vec::len),
             "record_path": file.display().to_string(),
-        }))
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body,
+        })
     }
 
     /// `meister_cast_lock`: identity-lock one character (D-1410).
@@ -340,7 +416,10 @@ impl Store {
     /// re-locked only with the identical lock; a different lock is
     /// a conflict, never a silent overwrite.
     pub fn lock_cast(&self, args: &Value) -> StoreResult<Value> {
-        let _guard = lock_store()?;
+        self.mutate(|| self.plan_lock_cast(args))
+    }
+
+    fn plan_lock_cast(&self, args: &Value) -> StoreResult<Planned> {
         let project_id = arg_id(args, "project_id")?;
         let character_id = arg_id(args, "character_id")?;
         self.read_project(&project_id)?;
@@ -359,7 +438,10 @@ impl Store {
         let lock_hash = sha256_hex(canonical_json(lock).as_bytes());
         if let Some(existing) = record.get("identity_lock").filter(|v| !v.is_null()) {
             if existing["lock_hash"].as_str() == Some(lock_hash.as_str()) {
-                return Ok(lock_body(&project_id, &character_id, &file, &lock_hash));
+                return Ok(Planned {
+                    write: None,
+                    body: lock_body(&project_id, &character_id, &file, &lock_hash),
+                });
             }
             return Err(StoreError::new(
                 "identity_lock_conflict",
@@ -374,8 +456,11 @@ impl Store {
         stored_lock["locked_by_tool"] = json!("meister_cast_lock");
         record["identity_lock"] = stored_lock;
         record["status"] = json!("identity_locked");
-        write_json_atomic(&file, &record)?;
-        Ok(lock_body(&project_id, &character_id, &file, &lock_hash))
+        let body = lock_body(&project_id, &character_id, &file, &lock_hash);
+        Ok(Planned {
+            write: Some((file, record)),
+            body,
+        })
     }
 
     /// `meister_canon_check`: the canon census, computed from the
@@ -474,10 +559,67 @@ const GENRE_PACKS: &[&str] = &[
     "strategy",
 ];
 
-fn lock_store() -> StoreResult<std::sync::MutexGuard<'static, ()>> {
-    STORE_LOCK
-        .lock()
-        .map_err(|_| StoreError::io("store lock poisoned"))
+fn store_busy(wait: Duration) -> StoreError {
+    StoreError::new(
+        "store_busy",
+        format!(
+            "the store lock was not free within {} ms; nothing was written",
+            wait.as_millis()
+        ),
+    )
+}
+
+/// Take the store lock for one mutation: the in-process mutex,
+/// then an exclusive advisory `flock` on `<root>/.meister.lock`.
+/// Both are polled against one deadline, so the whole wait is
+/// bounded by `wait`; past it the answer is `store_busy`. Creates
+/// the root and the (empty) lock file if absent — the caller has
+/// already validated its mutation, so a write is about to follow.
+fn lock_store(root: &Path, wait: Duration) -> StoreResult<StoreGuard> {
+    let deadline = Instant::now() + wait;
+    let process = loop {
+        match STORE_LOCK.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(StoreError::io("store lock poisoned"));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err(store_busy(wait));
+        }
+        std::thread::sleep(LOCK_POLL);
+    };
+    fs::create_dir_all(root)
+        .map_err(|e| StoreError::io(format!("cannot create {}: {e}", root.display())))?;
+    let path = root.join(LOCK_FILE);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| StoreError::io(format!("cannot open {}: {e}", path.display())))?;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(e)) => {
+                return Err(StoreError::io(format!(
+                    "cannot lock {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(store_busy(wait));
+        }
+        std::thread::sleep(LOCK_POLL);
+    }
+    Ok(StoreGuard {
+        _file: file,
+        _process: process,
+    })
 }
 
 fn lock_body(project_id: &str, character_id: &str, file: &Path, lock_hash: &str) -> Value {
@@ -1563,6 +1705,61 @@ mod tests {
         (store, root, source)
     }
 
+    /// Every path under `root` with every file's bytes, sorted.
+    /// Equal snapshots before and after a call mean the call
+    /// wrote nothing.
+    fn tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        fn walk(dir: &Path, out: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+            let Ok(read) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in read {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    out.push((path.clone(), None));
+                    walk(&path, out);
+                } else {
+                    let bytes = fs::read(&path).unwrap();
+                    out.push((path, Some(bytes)));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// Hold the store's `flock` from a second open file
+    /// description, as another process would.
+    fn hold_lock(root: &Path) -> File {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join(LOCK_FILE))
+            .unwrap();
+        file.try_lock().expect("the test takes the free lock");
+        file
+    }
+
+    fn named_create(name: &str) -> Value {
+        let mut args = create_args();
+        args["name"] = json!(name);
+        args
+    }
+
+    fn cast_args(source: &Path) -> Value {
+        json!({"envelope": envelope(), "project_id": "first-light",
+               "character_id": "warden", "identity": identity(source)})
+    }
+
+    fn lock_args(source: &Path) -> Value {
+        json!({"envelope": envelope(), "project_id": "first-light",
+               "character_id": "warden", "lock": lock(source)})
+    }
+
     // ---------- validation ----------
 
     #[test]
@@ -1644,7 +1841,163 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn first_mutation_creates_an_empty_lock_file_that_is_not_a_project() {
+        let (store, root) = temp_store("lock-file");
+        store.create_project(&create_args()).unwrap();
+        let lock_file = root.join(LOCK_FILE);
+        assert!(lock_file.is_file());
+        assert_eq!(fs::metadata(&lock_file).unwrap().len(), 0);
+        let listed = store.list_projects(&json!({})).unwrap();
+        assert_eq!(listed["count"], 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lock_is_released_after_a_write_and_after_a_refusal() {
+        let (mut store, root, source) = scaffolded("lock-release");
+        store.lock_wait = Duration::from_millis(200);
+        // After a committed write the next mutation takes the lock.
+        store.add_cast(&cast_args(&source)).unwrap();
+        // After a refusal under the lock, too.
+        let dup = store.add_cast(&cast_args(&source)).unwrap_err();
+        assert_eq!(dup.code, "conflict");
+        store.lock_cast(&lock_args(&source)).unwrap();
+        // And the lock is free for another holder afterwards.
+        drop(hold_lock(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_threads_lose_no_writes() {
+        let (store, root) = temp_store("lock-threads");
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let store = &store;
+                scope.spawn(move || {
+                    for i in 0..10 {
+                        store
+                            .create_project(&named_create(&format!("T{t} P{i}")))
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        let listed = store.list_projects(&json!({"limit": 100})).unwrap();
+        assert_eq!(listed["count"], 40);
+        let leftovers = tree(&root)
+            .iter()
+            .filter(|(path, _)| path.extension().is_some_and(|e| e == "tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "a temp file outlived its write");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // ---------- adversarial ----------
+
+    #[test]
+    fn adv_held_lock_refuses_every_mutation_store_busy_and_writes_nothing() {
+        let (mut store, root, source) = scaffolded("lock-busy");
+        store.add_cast(&cast_args(&source)).unwrap();
+        store.lock_wait = Duration::from_millis(150);
+        let holder = hold_lock(&root);
+        let before = tree(&root);
+        let started = Instant::now();
+        let create = store.create_project(&named_create("Second")).unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(create.code, "store_busy");
+        // The wait is the bound: not shorter, and not unbounded.
+        assert!(waited >= Duration::from_millis(150), "waited {waited:?}");
+        assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+        let mut other_cast = cast_args(&source);
+        other_cast["character_id"] = json!("herald");
+        assert_eq!(store.add_cast(&other_cast).unwrap_err().code, "store_busy");
+        assert_eq!(
+            store.lock_cast(&lock_args(&source)).unwrap_err().code,
+            "store_busy"
+        );
+        assert_eq!(tree(&root), before, "a store_busy call wrote something");
+        // Released, the same calls land.
+        drop(holder);
+        store.create_project(&named_create("Second")).unwrap();
+        store.lock_cast(&lock_args(&source)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_refusal_on_a_fresh_root_creates_nothing_not_even_the_lock_file() {
+        let (store, root) = temp_store("lock-fresh-refusal");
+        let mut bad = create_args();
+        bad["engine"] = json!("frostbite");
+        assert_eq!(
+            store.create_project(&bad).unwrap_err().code,
+            "invalid_input"
+        );
+        let missing = store
+            .add_cast(&json!({"envelope": envelope(), "project_id": "nope",
+                              "character_id": "warden", "identity": json!({})}))
+            .unwrap_err();
+        assert_eq!(missing.code, "not_found");
+        assert!(!root.exists(), "a refused call created the store root");
+    }
+
+    #[test]
+    fn adv_refusals_on_a_store_without_a_lock_file_leave_it_byte_identical() {
+        // A Rung 1 store predates the lock file. Every refusal —
+        // input, record, and state conflicts alike — must leave it
+        // exactly as found: no lock file appears.
+        let (store, root, source) = scaffolded("lock-legacy");
+        store.add_cast(&cast_args(&source)).unwrap();
+        store.lock_cast(&lock_args(&source)).unwrap();
+        fs::remove_file(root.join(LOCK_FILE)).unwrap();
+        let before = tree(&root);
+        assert_eq!(
+            store.create_project(&create_args()).unwrap_err().code,
+            "conflict"
+        );
+        assert_eq!(
+            store.add_cast(&cast_args(&source)).unwrap_err().code,
+            "conflict"
+        );
+        let mut changed = lock_args(&source);
+        changed["lock"]["ruling"] = json!("a different ruling");
+        assert_eq!(
+            store.lock_cast(&changed).unwrap_err().code,
+            "identity_lock_conflict"
+        );
+        let mut broken = cast_args(&source);
+        broken["character_id"] = json!("herald");
+        broken["identity"]["forms"] = json!([]);
+        assert_eq!(store.add_cast(&broken).unwrap_err().code, "invalid_record");
+        assert_eq!(tree(&root), before, "a refusal touched the store");
+        assert!(!root.join(LOCK_FILE).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_lock_wait_covers_the_in_process_mutex_too() {
+        // A thread parked on the flock holds the in-process mutex;
+        // a second thread must give up at the same bound, not wait
+        // behind it without limit.
+        let (mut store, root, _source) = scaffolded("lock-mutex-bound");
+        store.lock_wait = Duration::from_millis(300);
+        let holder = hold_lock(&root);
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            for name in ["Left", "Right"] {
+                let store = &store;
+                scope.spawn(move || {
+                    let err = store.create_project(&named_create(name)).unwrap_err();
+                    assert_eq!(err.code, "store_busy");
+                });
+            }
+        });
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(300), "waited {waited:?}");
+        assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+        drop(holder);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn duplicate_project_and_traversal_ids_are_refused() {
