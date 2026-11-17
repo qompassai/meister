@@ -43,7 +43,9 @@ identity records with the estate's canon governance and
 identity locks (D-1410); and the canon census, graduated
 server-side from the lumen pipes' census — every census claim
 recomputed from its source artifact and SHA-256 (D-713), the
-census failing closed on any unverified claim. The remaining
+census failing closed on any unverified claim. Since STORE-02
+(Rung 2) the census also reports a `state_hash` over the
+canonical record state and a `stale` flag (§5). The remaining
 24 tools are typed seams — each returns a structured
 `not_implemented` tool error naming the tool, its group, and
 the rung that makes it real.
@@ -201,6 +203,15 @@ body), and `io`.
 STORE-01 adds `store_busy`: a mutation that could not take the
 store lock within its bound (§7). Nothing is written; the call
 can simply be repeated.
+
+STORE-02 adds `census_stale`: the census body always carries
+`state_hash` (SHA-256 over the canonical record state) and
+`stale`. When the caller presents `prior_state_hash` and it no
+longer matches — or the state moves while the census runs —
+the verdict fails with `census_stale`, which outranks
+`canon_unverified` when both hold (both ride in the body).
+Staleness is a field plus a named failure line, not a counted
+claim, so `checked` does not change.
 
 ## 6. Resources, prompts, other surfaces
 

@@ -503,6 +503,135 @@ fn rung1_tampered_source_fails_the_census_over_the_wire() {
     let _ = std::fs::remove_dir_all(&store);
 }
 
+/// Build the locked wire project and return its passing census.
+fn wire_locked_project(store: &std::path::Path, source: &std::path::Path) -> serde_json::Value {
+    let _ = wire_create(store, source);
+    let add = call(
+        2,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "identity": wire_identity(source)}),
+    );
+    let _ = rpc_store(&std::env::temp_dir(), store, &[&discover(), &add]);
+    let lock = call(
+        3,
+        "meister_cast_lock",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "lock": wire_lock(source)}),
+    );
+    let _ = rpc_store(&std::env::temp_dir(), store, &[&discover(), &lock]);
+    let check = call(
+        4,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), store, &[&discover(), &check]);
+    assert_eq!(resps[1]["result"]["isError"], false);
+    result_json(&resps[1])
+}
+
+#[test]
+fn store02_census_names_its_state_and_repeats_byte_identically() {
+    let store = fresh_store();
+    let source = fixture_file("state");
+    let census = wire_locked_project(&store, &source);
+    let state_hash = census["state_hash"].as_str().unwrap();
+    assert_eq!(state_hash.len(), 64);
+    assert_eq!(census["stale"], false);
+    // Two more runs in two more processes: the same bytes, and a
+    // census pinned to the current state is current.
+    let plain = call(
+        5,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let pinned = call(
+        6,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game", "prior_state_hash": state_hash}),
+    );
+    let one = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &plain]);
+    let two = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &pinned]);
+    assert_eq!(result_text(&one[1]), census.to_string());
+    assert_eq!(result_text(&two[1]), census.to_string());
+    // The served schema carries the new fields: the contract, not
+    // just the behaviour.
+    let list = request(7, "tools/list", serde_json::json!({}));
+    let resps = rpc(&[&discover(), &list]);
+    let tool = resps[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "meister_canon_check")
+        .unwrap()
+        .clone();
+    let required = tool["outputSchema"]["required"].as_array().unwrap();
+    for field in ["state_hash", "stale"] {
+        assert!(required.iter().any(|r| r == field), "{field} not required");
+        assert!(census.get(field).is_some(), "{field} missing from the body");
+    }
+    assert_eq!(
+        tool["outputSchema"]["properties"]["stale"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        tool["inputSchema"]["properties"]["prior_state_hash"]["pattern"],
+        "^[0-9a-f]{64}$"
+    );
+    assert_eq!(
+        tool["inputSchema"]["required"],
+        serde_json::json!(["project_id"])
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn adv_store02_a_write_after_the_census_answers_census_stale_and_writes_nothing() {
+    let store = fresh_store();
+    let source = fixture_file("stale");
+    let census = wire_locked_project(&store, &source);
+    let held = census["state_hash"].as_str().unwrap();
+    // A write after the census: a second character.
+    let add = call(
+        5,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "herald",
+                           "identity": wire_identity(&source)}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
+    assert_eq!(result_json(&resps[1])["status"], "candidate");
+    let before = tree_digest(&store);
+    let stale = call(
+        6,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game", "prior_state_hash": held}),
+    );
+    let malformed = call(
+        7,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game", "prior_state_hash": "not-a-hash"}),
+    );
+    let resps = rpc_store(
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &stale, &malformed],
+    );
+    assert_eq!(resps[1]["result"]["isError"], true);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "census_stale");
+    assert_eq!(body["error"]["census"]["stale"], true);
+    assert_eq!(body["error"]["census"]["verdict"], "review");
+    assert_ne!(body["error"]["census"]["state_hash"], held);
+    // A prior that is not a hash is refused, never read as "no
+    // prior".
+    assert_eq!(result_json(&resps[2])["error"]["code"], "invalid_input");
+    assert_eq!(tree_digest(&store), before, "a refused census wrote");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
 #[test]
 fn rung1_refusals_over_the_wire() {
     let store = fresh_store();

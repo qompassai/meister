@@ -41,8 +41,14 @@
 //! source artifact and the SHA-256 it must carry, and any claim
 //! whose source is missing or mismatched is unverified — the
 //! census fails closed (D-713).
+//!
+//! Every census also records the project's `state_hash` — one
+//! SHA-256 over every record in the project (see `state_hash`) —
+//! so a census names the exact state it ran against (STORE-02).
+//! A census whose recorded hash no longer matches the project is
+//! stale: it describes a state that is gone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -68,6 +74,13 @@ const MAX_CHAIN_ENTRIES: usize = 64;
 const MAX_PALETTE_ENTRIES: usize = 32;
 const MAX_SECONDARY_PACKS: usize = 12;
 const MAX_RECORD_BYTES: u64 = 1_048_576;
+
+/// Directories under a project directory that hold records, one
+/// JSON file per record, each bounded by `MAX_CAST_PER_PROJECT`.
+/// `project.json` beside them is the one record outside a
+/// directory. A rung that adds a record kind adds its directory
+/// here, and the state hash covers it from that moment.
+const RECORD_DIRS: &[&str] = &["cast"];
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
 /// Name of the cross-process lock file under the store root. The
@@ -103,11 +116,12 @@ struct StoreGuard {
 pub struct StoreError {
     /// Stable typed code (`invalid_input`, `not_found`,
     /// `conflict`, `invalid_record`, `identity_lock_conflict`,
-    /// `canon_unverified`, `store_busy`, `io`).
+    /// `canon_unverified`, `census_stale`, `store_busy`, `io`).
     pub code: &'static str,
     /// Human-readable reason, safe to return to the caller.
     pub message: String,
-    /// The census body, for `canon_unverified` failures only.
+    /// The census body, for `canon_unverified` and `census_stale`
+    /// failures only.
     pub census: Option<Value>,
 }
 
@@ -464,12 +478,41 @@ impl Store {
     }
 
     /// `meister_canon_check`: the canon census, computed from the
-    /// files. Succeeds only with zero unverified claims; otherwise
-    /// returns `canon_unverified` with the full census attached.
+    /// files. Succeeds only when it is current and carries zero
+    /// unverified claims. Otherwise the full census rides the
+    /// refusal: `census_stale` when the census does not describe
+    /// the project's present state, else `canon_unverified`.
+    ///
+    /// `prior_state_hash` (optional) is the `state_hash` recorded
+    /// by a census the caller already holds. If the project has
+    /// moved on from it, that census is stale. Staleness outranks
+    /// unverified claims in the code returned: the caller's frame
+    /// of reference is wrong before any single claim is. The body
+    /// carries both facts either way.
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
         let project_id = arg_id(args, "project_id")?;
-        let census = Census::run(self, &project_id)?;
-        if census.unverified == 0 {
+        let prior = match args.get("prior_state_hash") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_str()
+                    .filter(|raw| is_hex64(raw))
+                    .ok_or_else(|| {
+                        StoreError::invalid("prior_state_hash must be 64 lowercase hex characters")
+                    })?
+                    .to_string(),
+            ),
+        };
+        let census = Census::run(self, &project_id, prior.as_deref())?;
+        if census.stale {
+            Err(StoreError {
+                code: "census_stale",
+                message: format!(
+                    "canon census for {project_id} is stale: {}",
+                    census.stale_reason
+                ),
+                census: Some(census.body),
+            })
+        } else if census.unverified == 0 {
             Ok(census.body)
         } else {
             Err(StoreError {
@@ -481,6 +524,28 @@ impl Store {
                 census: Some(census.body),
             })
         }
+    }
+
+    /// The project's state hash: SHA-256 over the canonical JSON
+    /// of every record in the project, in sorted path order.
+    ///
+    /// Concretely: one JSON object keyed by each record's path
+    /// relative to the project directory (`project.json`,
+    /// `cast/<id>.json`, ...), serialized canonically — keys
+    /// sorted, compact — and hashed. Sorted keys are the sorted
+    /// path order, and keying by path makes a moved record a
+    /// changed state. The hash is over record content, not file
+    /// bytes: key order and whitespace inside a file do not move
+    /// it, any changed value does. The lock file and temp files
+    /// are not records and are not covered.
+    ///
+    /// Fails closed: a record that cannot be read, parsed, or
+    /// bounded is an error, never skipped.
+    pub fn state_hash(&self, project_id: &str) -> StoreResult<String> {
+        let records = self.read_records(project_id)?;
+        Ok(sha256_hex(
+            canonical_json(&Value::Object(records.into_iter().collect())).as_bytes(),
+        ))
     }
 
     // ---------------------------------------------------------------
@@ -511,6 +576,41 @@ impl Store {
         }
         ids.sort();
         Ok(ids)
+    }
+
+    /// Every record in a project, keyed by its path relative to
+    /// the project directory: `project.json`, then each `*.json`
+    /// under the `RECORD_DIRS`.
+    fn read_records(&self, project_id: &str) -> StoreResult<BTreeMap<String, Value>> {
+        let mut records = BTreeMap::new();
+        records.insert("project.json".to_string(), self.read_project(project_id)?);
+        for dir_name in RECORD_DIRS {
+            let dir = self.project_dir(project_id).join(dir_name);
+            let entries = match fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(StoreError::io(format!("cannot list {dir_name}: {e}"))),
+            };
+            let mut seen = 0usize;
+            for entry in entries {
+                let entry = entry.map_err(|e| StoreError::io(format!("{dir_name} entry: {e}")))?;
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                seen += 1;
+                if seen > MAX_CAST_PER_PROJECT {
+                    return Err(StoreError::io(format!(
+                        "{dir_name} exceeds the per-project record bound"
+                    )));
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if let Some(record) = read_json_file(&path)? {
+                    records.insert(format!("{dir_name}/{name}"), record);
+                }
+            }
+        }
+        Ok(records)
     }
 
     fn read_cast_records(&self, project_id: &str) -> StoreResult<Vec<Value>> {
@@ -1153,6 +1253,34 @@ struct Census {
     body: Value,
     checked: usize,
     unverified: usize,
+    /// The census does not describe the project's present state.
+    stale: bool,
+    /// Why, when `stale`; empty otherwise.
+    stale_reason: String,
+}
+
+/// Decide staleness from the three hashes a census run knows: the
+/// state it started on, the state it ended on, and (optionally)
+/// the state a census the caller holds was run against. Returns
+/// the reason when stale.
+///
+/// Two ways to be stale: the project changed while the census was
+/// running, so its claims straddle two states; or the caller's
+/// earlier census was run against a state that is no longer the
+/// project's.
+fn staleness(before: &str, after: &str, prior: Option<&str>) -> Option<String> {
+    if before != after {
+        return Some(format!(
+            "the project changed while the census ran (state {before} became {after})"
+        ));
+    }
+    match prior {
+        Some(prior) if prior != before => Some(format!(
+            "the census recorded against state {prior} no longer describes the project \
+             (state is now {before})"
+        )),
+        _ => None,
+    }
 }
 
 struct CensusBuilder {
@@ -1246,7 +1374,12 @@ fn file_sha256(path: &Path) -> Option<String> {
 }
 
 impl Census {
-    fn run(store: &Store, project_id: &str) -> StoreResult<Census> {
+    fn run(store: &Store, project_id: &str, prior: Option<&str>) -> StoreResult<Census> {
+        // The state is hashed before the first claim and again
+        // after the last: a census is only as good as the state it
+        // names, so a state that moved underneath it is reported,
+        // not papered over.
+        let state_hash = store.state_hash(project_id)?;
         let project = store.read_project(project_id)?;
         let project_dir = store.project_dir(project_id);
         let project_file = store.project_file(project_id);
@@ -1263,6 +1396,12 @@ impl Census {
             governing_refs += g;
             chain_entries += m;
         }
+        let stale_reason = staleness(&state_hash, &store.state_hash(project_id)?, prior);
+        let stale = stale_reason.is_some();
+        let stale_reason = stale_reason.unwrap_or_default();
+        if stale {
+            b.failures.push(format!("census_stale: {stale_reason}"));
+        }
         let checked = b.checks.len();
         let unverified = b
             .checks
@@ -1271,9 +1410,11 @@ impl Census {
             .count();
         let body = json!({
             "project_id": project_id,
+            "state_hash": state_hash,
+            "stale": stale,
             "checked": checked,
             "unverified": unverified,
-            "verdict": if unverified == 0 { "pass" } else { "review" },
+            "verdict": if unverified == 0 && !stale { "pass" } else { "review" },
             "counts": {
                 "cast_records": cast.len(),
                 "identity_locks": locks,
@@ -1288,6 +1429,8 @@ impl Census {
             body,
             checked,
             unverified,
+            stale,
+            stale_reason,
         })
     }
 }
@@ -1856,7 +1999,10 @@ mod tests {
     #[test]
     fn lock_is_released_after_a_write_and_after_a_refusal() {
         let (mut store, root, source) = scaffolded("lock-release");
-        store.lock_wait = Duration::from_millis(200);
+        // Success-path calls only: a production-scale bound, so a
+        // parallel test's deliberate hold of the process-global
+        // STORE_LOCK cannot starve them (see the held-lock test).
+        store.lock_wait = Duration::from_secs(5);
         // After a committed write the next mutation takes the lock.
         store.add_cast(&cast_args(&source)).unwrap();
         // After a refusal under the lock, too.
@@ -1893,7 +2039,237 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A project with one locked character: a passing census.
+    fn locked_project(name: &str) -> (Store, PathBuf, PathBuf) {
+        let (store, root, source) = scaffolded(name);
+        store.add_cast(&cast_args(&source)).unwrap();
+        store.lock_cast(&lock_args(&source)).unwrap();
+        (store, root, source)
+    }
+
+    fn census_args(prior: &str) -> Value {
+        json!({"project_id": "first-light", "prior_state_hash": prior})
+    }
+
+    #[test]
+    fn same_state_gives_the_same_hash_and_byte_identical_census_bodies() {
+        let (store, root, _source) = locked_project("state-stable");
+        let first = store.state_hash("first-light").unwrap();
+        assert!(is_hex64(&first));
+        assert_eq!(store.state_hash("first-light").unwrap(), first);
+        let one = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap();
+        let two = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap();
+        assert_eq!(one.to_string(), two.to_string());
+        // The census names the state it ran against.
+        assert_eq!(one["state_hash"], first.as_str());
+        assert_eq!(one["stale"], false);
+        assert_eq!(one["verdict"], "pass");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn census_against_the_current_state_hash_is_current() {
+        let (store, root, _source) = locked_project("state-current");
+        let hash = store.state_hash("first-light").unwrap();
+        let census = store.canon_census(&census_args(&hash)).unwrap();
+        assert_eq!(census["stale"], false);
+        assert_eq!(census["state_hash"], hash.as_str());
+        // An absent or null prior asks nothing about staleness.
+        let census = store
+            .canon_census(&json!({"project_id": "first-light", "prior_state_hash": null}))
+            .unwrap();
+        assert_eq!(census["stale"], false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_hash_covers_every_record_and_nothing_else() {
+        let (store, root, source) = scaffolded("state-cover");
+        let bare = store.state_hash("first-light").unwrap();
+        // Not records: the lock file, a temp file, a stray source.
+        fs::write(root.join("first-light/notes.txt"), b"not a record").unwrap();
+        fs::create_dir_all(root.join("first-light/cast")).unwrap();
+        fs::write(root.join("first-light/cast/.warden.json-1.tmp"), b"{").unwrap();
+        assert_eq!(store.state_hash("first-light").unwrap(), bare);
+        fs::remove_file(root.join("first-light/cast/.warden.json-1.tmp")).unwrap();
+        // A record: the hash moves.
+        store.add_cast(&cast_args(&source)).unwrap();
+        assert_ne!(store.state_hash("first-light").unwrap(), bare);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn census_is_a_read_it_writes_nothing() {
+        let (store, root, _source) = locked_project("state-readonly");
+        let before = tree(&root);
+        store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap();
+        assert_eq!(tree(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // ---------- adversarial ----------
+
+    #[test]
+    fn adv_any_write_after_a_census_makes_it_stale() {
+        let (store, root, source) = scaffolded("stale-writes");
+        let census = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap();
+        let mut held = census["state_hash"].as_str().unwrap().to_string();
+        // Each kind of write, in turn, strands the census held.
+        let mut herald = cast_args(&source);
+        herald["character_id"] = json!("herald");
+        let mut herald_lock = lock_args(&source);
+        herald_lock["character_id"] = json!("herald");
+        let writes: [&dyn Fn(); 3] = [
+            &|| {
+                store.add_cast(&herald).unwrap();
+            },
+            &|| {
+                store.lock_cast(&herald_lock).unwrap();
+            },
+            // A write behind the server's back counts too.
+            &|| {
+                let file = root.join("first-light/project.json");
+                let mut record: Value =
+                    serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+                record["name"] = json!("Second Light");
+                fs::write(&file, record.to_string()).unwrap();
+            },
+        ];
+        for write in writes {
+            write();
+            let before = tree(&root);
+            let err = store.canon_census(&census_args(&held)).unwrap_err();
+            assert_eq!(err.code, "census_stale");
+            let body = err.census.expect("the census rides the refusal");
+            assert_eq!(body["stale"], true);
+            assert_eq!(body["verdict"], "review");
+            assert_ne!(body["state_hash"], held.as_str());
+            assert!(
+                body["failures"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f.as_str().unwrap().starts_with("census_stale: ")),
+                "no named census_stale failure: {body}"
+            );
+            // The refusal is a read: the store is untouched.
+            assert_eq!(tree(&root), before);
+            held = body["state_hash"].as_str().unwrap().to_string();
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_reordered_records_hash_the_same_and_a_changed_value_does_not() {
+        // Two stores, the same records written in opposite order.
+        let (first, root_a, source) = scaffolded("reorder-a");
+        let (second, root_b) = temp_store("reorder-b");
+        second.create_project(&create_args()).unwrap();
+        let mut herald = cast_args(&source);
+        herald["character_id"] = json!("herald");
+        first.add_cast(&cast_args(&source)).unwrap();
+        first.add_cast(&herald).unwrap();
+        second.add_cast(&herald).unwrap();
+        second.add_cast(&cast_args(&source)).unwrap();
+        let hash = first.state_hash("first-light").unwrap();
+        assert_eq!(second.state_hash("first-light").unwrap(), hash);
+        // The keys inside a record file, reversed and re-spaced.
+        let file = root_a.join("first-light/cast/warden.json");
+        let record: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        let reversed: Vec<String> = record
+            .as_object()
+            .unwrap()
+            .iter()
+            .rev()
+            .map(|(key, value)| format!("  {}:\n {value}", json!(key)))
+            .collect();
+        fs::write(&file, format!("{{\n{}\n}}", reversed.join(",\n"))).unwrap();
+        assert_eq!(first.state_hash("first-light").unwrap(), hash);
+        // One changed value is a different state.
+        let mut changed = record.clone();
+        changed["identity"]["role"] = json!("keeper of the second floor");
+        fs::write(&file, changed.to_string()).unwrap();
+        assert_ne!(first.state_hash("first-light").unwrap(), hash);
+        // So is the same record under another path.
+        fs::write(&file, record.to_string()).unwrap();
+        assert_eq!(first.state_hash("first-light").unwrap(), hash);
+        fs::rename(&file, root_a.join("first-light/cast/moved.json")).unwrap();
+        assert_ne!(first.state_hash("first-light").unwrap(), hash);
+        let _ = fs::remove_dir_all(&root_a);
+        let _ = fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn adv_stale_outranks_unverified_and_the_body_shows_both() {
+        let (store, root, source) = scaffolded("stale-and-unverified");
+        let held = store.state_hash("first-light").unwrap();
+        // An unlocked character: an unverified claim, and a write.
+        store.add_cast(&cast_args(&source)).unwrap();
+        let err = store.canon_census(&census_args(&held)).unwrap_err();
+        assert_eq!(err.code, "census_stale");
+        let body = err.census.unwrap();
+        assert_eq!(body["stale"], true);
+        assert!(body["unverified"].as_u64().unwrap() > 0);
+        // Asked without a prior, the same state is unverified, and
+        // says it is current.
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        assert_eq!(err.code, "canon_unverified");
+        assert_eq!(err.census.unwrap()["stale"], false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_malformed_prior_state_hash_is_refused_not_ignored() {
+        let (store, root, _source) = locked_project("stale-bad-prior");
+        let upper = "A".repeat(64);
+        for bad in [json!("abc"), json!(upper), json!(7), json!(["x"])] {
+            let err = store
+                .canon_census(&json!({"project_id": "first-light", "prior_state_hash": bad}))
+                .unwrap_err();
+            assert_eq!(err.code, "invalid_input", "{bad}");
+            assert!(err.census.is_none());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_record_that_cannot_be_read_fails_the_hash_and_the_census_closed() {
+        let (store, root, _source) = locked_project("state-torn");
+        fs::write(root.join("first-light/cast/herald.json"), b"{ torn").unwrap();
+        let err = store.state_hash("first-light").unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        // No hash, no census: never a pass over a state it could
+        // not read.
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_state_that_moves_mid_census_is_stale() {
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        // Unmoved, with no prior or the matching prior: current.
+        assert!(staleness(&a, &a, None).is_none());
+        assert!(staleness(&a, &a, Some(&a)).is_none());
+        // Moved while running: stale even when the prior matched
+        // the state the census started on.
+        assert!(staleness(&a, &b, None).is_some());
+        assert!(staleness(&a, &b, Some(&a)).is_some());
+        // Unmoved, but not the state the caller's census saw.
+        assert!(staleness(&a, &a, Some(&b)).is_some());
+    }
 
     #[test]
     fn adv_held_lock_refuses_every_mutation_store_busy_and_writes_nothing() {
@@ -1917,8 +2293,13 @@ mod tests {
             "store_busy"
         );
         assert_eq!(tree(&root), before, "a store_busy call wrote something");
-        // Released, the same calls land.
+        // Released, the same calls land. The success phase runs
+        // with a production-scale bound: STORE_LOCK is process-
+        // global, and a parallel test may be inside its own
+        // deliberate hold (the mutex-bound test holds it for its
+        // full 300 ms), which must not starve these calls.
         drop(holder);
+        store.lock_wait = Duration::from_secs(5);
         store.create_project(&named_create("Second")).unwrap();
         store.lock_cast(&lock_args(&source)).unwrap();
         let _ = fs::remove_dir_all(&root);

@@ -29,6 +29,16 @@ absent on purpose: its schema did not change — its Rung 1
 definition hash is byte-identical to its birth record — only
 its handler became real.
 
+## rung2/
+
+One promotion record per tool whose served definition changed
+at Rung 2, in the same envelope and with the same `produced`
+convention. First entry: `meister_canon_check` (STORE-02 — the
+census gained `state_hash` and `stale` outputs and the optional
+`prior_state_hash` input). Further records join this section as
+the rung's clusters land; a tool whose definition did not
+change gets no record.
+
 One vocabulary note, recorded rather than smoothed over: bloch's
 intake gate parses `origin_lane` as `general|restricted`, while
 Meister's plan of record stamps `origin_lane: qompass`. These

@@ -658,10 +658,21 @@ pub fn specs() -> Vec<ToolSpec> {
             rung: 1,
             record_carrying: false,
             profiles: &[PROFILE_CORE],
-            description: "Run the canon census over a project: every claim recomputed from its source artifact and SHA-256 (D-713); any unverified claim fails the census closed with the full census in the error body. Declares no visual PASS; the Owner's eye is the verdict.",
-            input: read_input(&[("project_id", s())], &["project_id"]),
+            description: "Run the canon census over a project: every claim recomputed from its source artifact and SHA-256 (D-713); any unverified claim fails the census closed with the full census in the error body. The census records the state_hash it ran against; pass an earlier census's hash as prior_state_hash and a project that has changed since answers census_stale. Declares no visual PASS; the Owner's eye is the verdict.",
+            input: read_input(
+                &[
+                    ("project_id", s()),
+                    (
+                        "prior_state_hash",
+                        json!({"type": "string", "pattern": "^[0-9a-f]{64}$"}),
+                    ),
+                ],
+                &["project_id"],
+            ),
             output: out_schema(&[
                 ("project_id", s()),
+                ("state_hash", s()),
+                ("stale", boolean()),
                 ("checked", integer()),
                 ("unverified", integer()),
                 ("verdict", s()),
