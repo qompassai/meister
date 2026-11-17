@@ -24,3 +24,10 @@ gate:
 # docs/BUILDING.md §SCIP).
 scip:
     rust-analyzer scip . --output index.scip
+
+# EFLO: measure the served tools/list in real tokens (tiktoken,
+# cl100k_base) and rewrite EFLO.md. No estimate is substituted: the
+# script fails if the tokenizer or the surface is unavailable.
+eflo:
+    cargo build
+    python3 -I scripts/eflo_measure.py
