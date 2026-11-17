@@ -361,16 +361,15 @@ fn validate_story_beats(
         .collect();
     let mut progression_nodes: Vec<String> = Vec::new();
     for (_, record) in store.read_family_records(project_id, "systems")? {
-        if record.get("kind").and_then(Value::as_str) == Some("progression_dag") {
-            if let Some(nodes) = record
+        if record.get("kind").and_then(Value::as_str) == Some("progression_dag")
+            && let Some(nodes) = record
                 .get("spec")
                 .and_then(|s| s.get("nodes"))
                 .and_then(Value::as_array)
-            {
-                for node in nodes {
-                    if let Some(id) = node.get("id").and_then(Value::as_str) {
-                        progression_nodes.push(id.to_string());
-                    }
+        {
+            for node in nodes {
+                if let Some(id) = node.get("id").and_then(Value::as_str) {
+                    progression_nodes.push(id.to_string());
                 }
             }
         }
