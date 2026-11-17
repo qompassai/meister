@@ -14,6 +14,15 @@
 //! 3. An unknown name returns `unknown tool` as an `isError`
 //!    result (execution failure, never a protocol error — Tiger
 //!    Style MCP Rule 6).
+//! 4. The profile check comes AFTER the lane gate. The server
+//!    serves one profile per launch (`MEISTER_PROFILE`, see
+//!    `catalog::PROFILES`): `tools/list` carries only that
+//!    profile's tools, and a call to a catalog tool outside it
+//!    returns the typed `group_not_loaded` error naming the
+//!    profiles that carry the tool — never `unknown tool`. Because
+//!    the lane gate runs first, refused input is never told where
+//!    a tool lives. The refusal is pre-mutation: it returns before
+//!    the store is resolved.
 //!
 //! The dispatch itself is stateless; the store root is resolved
 //! per call from the environment contract (`store::ENV_ROOT`).
@@ -26,13 +35,12 @@ use std::borrow::Cow;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
 
-use crate::catalog::{self, ToolSpec};
+use crate::catalog::{self, Profile, ToolSpec};
 use crate::lane::{self, GateOutcome};
 use crate::store::{Store, StoreError};
 
@@ -101,9 +109,33 @@ fn lane_refusal(code: &str, reason: &str, record_id: &str) -> CallToolResult {
     )
 }
 
-/// The dispatch. Pure over (name, arguments): unit-testable
-/// without any transport.
-fn call_tool(name: &str, args: &Value) -> CallToolResult {
+/// The out-of-profile answer: the tool exists, but this launch
+/// does not serve it. Names the profiles a client can relaunch
+/// with. Produced before the store is resolved: it writes nothing.
+fn group_not_loaded(spec: &ToolSpec, active: &Profile) -> CallToolResult {
+    let carriers = catalog::carrying_profiles(spec);
+    text_result(
+        &json!({"error": {
+            "code": "group_not_loaded",
+            "tool": spec.name,
+            "group": spec.group,
+            "active_profile": active.name,
+            "profiles": carriers,
+            "message": format!(
+                "{} is not loaded in profile {}; relaunch with {} set to one of: {}",
+                spec.name,
+                active.name,
+                catalog::ENV_PROFILE,
+                carriers.join(", ")
+            ),
+        }}),
+        true,
+    )
+}
+
+/// The dispatch. Pure over (profile, name, arguments):
+/// unit-testable without any transport.
+fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
     if name == "meister_lane_check" {
         return text_result(&lane::verdict_json(args), false);
     }
@@ -116,7 +148,16 @@ fn call_tool(name: &str, args: &Value) -> CallToolResult {
             return lane_refusal(code, &reason, lane::record_id(&envelope));
         }
     }
-    // Rung 1: Groups 1–2 are real. Every other group stays a seam.
+    // The profile check follows the lane gate, by law: lane-refused
+    // input never learns which profile carries a tool.
+    if !profile.serves(&spec) {
+        return group_not_loaded(&spec, profile);
+    }
+    // Rung 1 made Groups 1–2 real; Rung 2 adds system_define
+    // (SYS-02..07), scene_define/scene_validate (SYS-08), and
+    // level_compose's structural half (SYS-09; its narrative
+    // fields still refuse until Rung 3). Every other unlisted
+    // group stays a seam.
     let store = Store::from_env();
     match name {
         "meister_project_create" => store_result(store.create_project(args)),
@@ -125,23 +166,24 @@ fn call_tool(name: &str, args: &Value) -> CallToolResult {
         "meister_cast_add" => store_result(store.add_cast(args)),
         "meister_cast_lock" => store_result(store.lock_cast(args)),
         "meister_canon_check" => store_result(store.canon_census(args)),
+        "meister_system_define" => store_result(store.define_system(args)),
+        "meister_scene_define" => store_result(store.define_scene(args)),
+        "meister_scene_validate" => store_result(store.validate_scene(args)),
+        "meister_level_compose" => store_result(store.compose_level(args)),
         _ => seam_result(&spec),
     }
 }
 
 /// The server handler. Dispatch is stateless; it runs on a
 /// blocking thread so nothing in dispatch can stall the runtime.
-pub struct MeisterServer;
-
-impl MeisterServer {
-    pub fn new() -> Self {
-        MeisterServer
-    }
+/// The served profile is fixed at launch and never changes.
+pub struct MeisterServer {
+    profile: &'static Profile,
 }
 
-impl Default for MeisterServer {
-    fn default() -> Self {
-        Self::new()
+impl MeisterServer {
+    pub fn new(profile: &'static Profile) -> Self {
+        MeisterServer { profile }
     }
 }
 
@@ -167,7 +209,7 @@ impl ServerHandler for MeisterServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult {
-            tools: tool_definitions(),
+            tools: catalog::tool_definitions(self.profile),
             ..Default::default()
         })
     }
@@ -179,7 +221,9 @@ impl ServerHandler for MeisterServer {
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.to_string();
         let arguments = Value::Object(request.arguments.unwrap_or_default());
-        let outcome = tokio::task::spawn_blocking(move || call_tool(&name, &arguments)).await;
+        let profile = self.profile;
+        let outcome =
+            tokio::task::spawn_blocking(move || call_tool(profile, &name, &arguments)).await;
         match outcome {
             Ok(result) => Ok(result.into()),
             Err(join) => Err(ErrorData::internal_error(
@@ -188,12 +232,6 @@ impl ServerHandler for MeisterServer {
             )),
         }
     }
-}
-
-/// The served definitions (kept as a free function so the catalog
-/// tests and the handler share one construction path).
-fn tool_definitions() -> Vec<Tool> {
-    catalog::tool_definitions()
 }
 
 #[cfg(test)]
@@ -207,6 +245,15 @@ mod tests {
         serde_json::from_str(&text.text).expect("result text is JSON")
     }
 
+    fn profile(name: &str) -> &'static Profile {
+        catalog::profile_named(name).expect("a declared profile")
+    }
+
+    /// The pre-profile dispatch tests run on the whole surface.
+    fn full() -> &'static Profile {
+        profile(catalog::PROFILE_FULL)
+    }
+
     fn good_envelope() -> Value {
         json!({"record_id": "rec-9", "origin_lane": "qompass",
                "content_label": "sfw", "evidence": "README §Lane law"})
@@ -216,27 +263,108 @@ mod tests {
 
     #[test]
     fn lane_check_allows_the_one_legal_combination() {
-        let result = call_tool("meister_lane_check", &good_envelope());
+        let result = call_tool(full(), "meister_lane_check", &good_envelope());
         assert!(!result.is_error.unwrap_or(false));
         assert_eq!(result_json(&result)["verdict"], "allow");
     }
 
     #[test]
     fn allowed_envelope_reaches_the_seam() {
-        // A Group 3 seam (Rung 2): the allowed envelope falls
+        // A Group 4 seam (Rung 3): the allowed envelope falls
         // through the gate to the seam error, unchanged.
+        // (Group 3's tools all became real at Rung 2.)
+        let args = json!({"envelope": good_envelope(),
+                          "project_id": "first-light"});
+        let result = call_tool(full(), "meister_dialogue_author", &args);
+        assert!(result.is_error.unwrap_or(false));
+        let body = result_json(&result);
+        assert_eq!(body["error"]["code"], "not_implemented");
+        assert_eq!(body["error"]["rung"], 3);
+    }
+
+    #[test]
+    fn in_profile_calls_dispatch_as_before() {
+        // narrative carries Group 4: the call reaches its seam.
+        let args = json!({"envelope": good_envelope(),
+                          "project_id": "first-light"});
+        for name in ["narrative", "niflheim-floor", "full"] {
+            let result = call_tool(profile(name), "meister_dialogue_author", &args);
+            assert_eq!(
+                result_json(&result)["error"]["code"],
+                "not_implemented",
+                "profile {name}"
+            );
+        }
+        // The lane check is core: live under every profile.
+        for declared in catalog::PROFILES {
+            let result = call_tool(declared, "meister_lane_check", &good_envelope());
+            assert_eq!(
+                result_json(&result)["verdict"],
+                "allow",
+                "{}",
+                declared.name
+            );
+        }
+    }
+
+    // ---------- adversarial ----------
+
+    #[test]
+    fn out_of_profile_call_is_group_not_loaded_naming_the_carriers() {
         let args = json!({"envelope": good_envelope(),
                           "project_id": "first-light",
                           "scene_id": "floor-01",
                           "graph": {}});
-        let result = call_tool("meister_scene_define", &args);
-        assert!(result.is_error.unwrap_or(false));
+        for name in ["core", "canon", "narrative", "assets", "qa", "release"] {
+            let result = call_tool(profile(name), "meister_scene_define", &args);
+            assert!(result.is_error.unwrap_or(false));
+            let body = result_json(&result);
+            assert_eq!(body["error"]["code"], "group_not_loaded", "profile {name}");
+            assert_eq!(body["error"]["tool"], "meister_scene_define");
+            assert_eq!(body["error"]["active_profile"], name);
+            assert_eq!(
+                body["error"]["profiles"],
+                json!(["systems", "niflheim-floor"])
+            );
+        }
+        // A read tool (no envelope, no gate) is refused the same way.
+        let result = call_tool(
+            profile("core"),
+            "meister_account_inspect",
+            &json!({"channel": "itch", "account_id": "a"}),
+        );
         let body = result_json(&result);
-        assert_eq!(body["error"]["code"], "not_implemented");
-        assert_eq!(body["error"]["rung"], 2);
+        assert_eq!(body["error"]["code"], "group_not_loaded");
+        assert_eq!(body["error"]["profiles"], json!(["release"]));
     }
 
-    // ---------- adversarial ----------
+    #[test]
+    fn lane_gate_precedes_the_profile_check() {
+        // Out of profile AND nsfw: the lane refusal wins, and the
+        // answer says nothing about where the tool lives.
+        let mut envelope = good_envelope();
+        envelope["content_label"] = json!("nsfw");
+        let args = json!({"envelope": envelope, "name": "x",
+                          "engine": "bevy", "genre_pack": "puzzle"});
+        let result = call_tool(profile("core"), "meister_project_create", &args);
+        let body = result_json(&result);
+        assert_eq!(body["error"]["code"], "lane_mismatch");
+        assert!(body["error"].get("profiles").is_none());
+        assert!(!body.to_string().contains("canon"));
+        // Out of profile and unclassified: same order.
+        let result = call_tool(
+            profile("core"),
+            "meister_project_create",
+            &json!({"name": "x"}),
+        );
+        assert_eq!(result_json(&result)["error"]["code"], "lane_unclassified");
+    }
+
+    #[test]
+    fn unknown_tool_stays_unknown_under_a_narrow_profile() {
+        let result = call_tool(profile("core"), "meister_nope", &json!({}));
+        assert_eq!(result_json(&result)["error"], "unknown tool");
+    }
 
     #[test]
     fn nsfw_envelope_is_refused_before_the_seam() {
@@ -244,7 +372,7 @@ mod tests {
         envelope["content_label"] = json!("nsfw");
         let args = json!({"envelope": envelope, "name": "x",
                           "engine": "bevy", "genre_pack": "puzzle"});
-        let result = call_tool("meister_project_create", &args);
+        let result = call_tool(full(), "meister_project_create", &args);
         let body = result_json(&result);
         assert_eq!(body["error"]["code"], "lane_mismatch");
         assert_eq!(body["error"]["ids"], json!(["rec-9"]));
@@ -252,14 +380,14 @@ mod tests {
 
     #[test]
     fn missing_envelope_is_unclassified_not_a_crash() {
-        let result = call_tool("meister_project_create", &json!({"name": "x"}));
+        let result = call_tool(full(), "meister_project_create", &json!({"name": "x"}));
         let body = result_json(&result);
         assert_eq!(body["error"]["code"], "lane_unclassified");
     }
 
     #[test]
     fn unknown_tool_is_an_error_result() {
-        let result = call_tool("meister_nope", &json!({}));
+        let result = call_tool(full(), "meister_nope", &json!({}));
         assert!(result.is_error.unwrap_or(false));
         assert_eq!(result_json(&result)["error"], "unknown tool");
     }

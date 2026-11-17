@@ -1,0 +1,28 @@
+{
+  "id": "dag-03-duplicate-node",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "the same node declared twice",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-dag-03-duplicate-node",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-dag-03-duplicate-node",
+    "kind": "progression_dag",
+    "spec": {
+      "nodes": [
+        {
+          "id": "a"
+        },
+        {
+          "id": "a"
+        }
+      ]
+    }
+  }
+}

@@ -16,11 +16,14 @@
 //! can author anything at all.
 //!
 //! Usage: `meister` (no arguments; unknown arguments are warned
-//! about and ignored).
+//! about and ignored). The served surface profile is chosen at
+//! launch by `MEISTER_PROFILE` (default `core`; see
+//! `catalog::PROFILES`); an unknown value refuses to start.
 
 #![forbid(unsafe_code)]
 
 mod catalog;
+mod graph;
 mod guard;
 mod hash;
 mod lane;
@@ -39,17 +42,25 @@ use tokio::sync::Mutex;
 /// incrementally, so this only needs to cover response bursts.
 const DUPLEX_BUFFER_BYTES: usize = 1024 * 1024;
 
+/// Exit status when `MEISTER_PROFILE` names no declared profile.
+/// Distinct from the general failure status so a launcher can tell
+/// a configuration refusal from a serve-loop fault.
+const EXIT_UNKNOWN_PROFILE: u8 = 2;
+
+/// Bound on how much of a refused `MEISTER_PROFILE` value is echoed.
+const PROFILE_ECHO_MAX_CHARS: usize = 64;
+
 /// Wire the pieces together: the guard owns stdio, the SDK service
 /// sits behind an in-process duplex, and a pump copies its responses
 /// back to stdout through the same lock the guard writes with.
-async fn run() -> std::io::Result<()> {
+async fn run(profile: &'static catalog::Profile) -> std::io::Result<()> {
     let (client_side, server_side) = tokio::io::duplex(DUPLEX_BUFFER_BYTES);
     let (server_read, server_write) = tokio::io::split(server_side);
     let (client_read, client_write) = tokio::io::split(client_side);
     let stdout: guard::SharedStdout = Arc::new(Mutex::new(tokio::io::stdout()));
 
     let ordering = guard::Ordering::new();
-    let handler = server::MeisterServer::new();
+    let handler = server::MeisterServer::new(profile);
     let serve = tokio::spawn(async move {
         let transport = AsyncRwTransport::new_server(server_read, server_write);
         match handler.serve(transport).await {
@@ -93,6 +104,28 @@ fn main() -> ExitCode {
     for arg in std::env::args().skip(1) {
         eprintln!("meister: ignoring unknown arg {arg}");
     }
+    // The profile declarations are checked before anything is
+    // served: an inconsistent catalog refuses to start.
+    if let Err(e) = catalog::check_declared_profiles() {
+        eprintln!("meister: refusing to start: profile_catalog_invalid: {e}");
+        return ExitCode::FAILURE;
+    }
+    // One profile per launch, fixed before anything is served. An
+    // unknown value is a refusal, never a fallback to the default.
+    let raw = std::env::var_os(catalog::ENV_PROFILE);
+    let profile = match catalog::select_profile(raw.as_deref()) {
+        Ok(profile) => profile,
+        Err(given) => {
+            let echoed: String = given.chars().take(PROFILE_ECHO_MAX_CHARS).collect();
+            let declared: Vec<&str> = catalog::PROFILES.iter().map(|p| p.name).collect();
+            eprintln!(
+                "meister: refusing to start: unknown_profile: {}={echoed:?} is not a declared profile (declared: {})",
+                catalog::ENV_PROFILE,
+                declared.join(", ")
+            );
+            return ExitCode::from(EXIT_UNKNOWN_PROFILE);
+        }
+    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -104,7 +137,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run()) {
+    match runtime.block_on(run(profile)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("meister: serve loop ended: {e}");

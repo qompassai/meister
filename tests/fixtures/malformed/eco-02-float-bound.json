@@ -1,0 +1,27 @@
+{
+  "id": "eco-02-float-bound",
+  "tool": "meister_system_define",
+  "expected_code": "economy_float",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "a float declared bound",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-eco-02-float-bound",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-eco-02-float-bound",
+    "kind": "economy",
+    "spec": {
+      "currencies": [
+        {
+          "id": "gold",
+          "min": 0,
+          "max": 99.5
+        }
+      ]
+    }
+  }
+}

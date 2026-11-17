@@ -1,0 +1,29 @@
+{
+  "id": "flags-03-float-initial",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "a float where an integer initial belongs",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-flags-03-float-initial",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-flags-03-float-initial",
+    "kind": "flags",
+    "spec": {
+      "flags": [
+        {
+          "id": "depth",
+          "type": "int",
+          "initial": 1.5,
+          "min": 0,
+          "max": 9
+        }
+      ]
+    }
+  }
+}

@@ -34,6 +34,10 @@ pub struct ToolSpec {
     /// True when the tool's input carries a record envelope and the
     /// lane gate runs before the handler.
     pub record_carrying: bool,
+    /// The base profiles that carry this tool (see `PROFILES`):
+    /// never empty, never a bundle, never `full`. Double entry with
+    /// `PROFILES`; `check_profiles` holds the two in agreement.
+    pub profiles: &'static [&'static str],
     /// One-line description, as served.
     pub description: &'static str,
     /// Complete input schema (object with explicit `properties`).
@@ -160,6 +164,360 @@ const GENRE_PACKS: &[&str] = &[
     "strategy",
 ];
 
+// ---- Surface profiles (EFLO-02) ----
+//
+// The catalog is served in profiles so a session loads the tools its
+// task triggers, not the whole surface (COMPLIANCE.md §3, EFLO.md).
+// Deterministic config decides what CAN load; a profile grants no
+// authority — the lane gate and the handlers still decide what is
+// permitted.
+
+pub const PROFILE_CORE: &str = "core";
+pub const PROFILE_CANON: &str = "canon";
+pub const PROFILE_SYSTEMS: &str = "systems";
+pub const PROFILE_NARRATIVE: &str = "narrative";
+pub const PROFILE_ASSETS: &str = "assets";
+pub const PROFILE_QA: &str = "qa";
+pub const PROFILE_RELEASE: &str = "release";
+pub const PROFILE_NIFLHEIM_FLOOR: &str = "niflheim-floor";
+pub const PROFILE_FULL: &str = "full";
+
+/// How a profile's served set is declared.
+pub enum ProfileKind {
+    /// The `core` tools plus the profile's own `tools`. `core` itself
+    /// is the base profile whose own tools are the core tools.
+    Base { tools: &'static [&'static str] },
+    /// The union of the named base profiles. A bundle never names
+    /// `release` (credential-adjacent, opt-in only), another bundle,
+    /// or `full`.
+    Bundle { members: &'static [&'static str] },
+    /// Every catalog tool. For conformance and audit only.
+    Full,
+}
+
+/// One declared surface profile.
+pub struct Profile {
+    /// The value `MEISTER_PROFILE` selects it by.
+    pub name: &'static str,
+    pub kind: ProfileKind,
+}
+
+/// The declared profiles, in serving order: `core` first (the
+/// default), `full` last. Membership is the plan of record's
+/// (docs/PATH-TO-1.0.md §5, EFLO-02) over the tools that exist.
+pub const PROFILES: &[Profile] = &[
+    // Four tools, all read-only.
+    Profile {
+        name: PROFILE_CORE,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_lane_check",
+                "meister_project_list",
+                "meister_project_inspect",
+                "meister_canon_check",
+            ],
+        },
+    },
+    Profile {
+        name: PROFILE_CANON,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_project_create",
+                "meister_cast_add",
+                "meister_cast_lock",
+            ],
+        },
+    },
+    // Group 3 plus `meister_level_compose` (its structural half
+    // lands with the systems rung).
+    Profile {
+        name: PROFILE_SYSTEMS,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_scene_define",
+                "meister_system_define",
+                "meister_scene_validate",
+                "meister_level_compose",
+            ],
+        },
+    },
+    // Groups 4–5 except `meister_level_compose`. The Rung 3 freeze
+    // and emit tools join this profile when they exist.
+    Profile {
+        name: PROFILE_NARRATIVE,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_dialogue_author",
+                "meister_dialogue_get",
+                "meister_reaction_set",
+                "meister_story_define",
+                "meister_playtest_generate",
+            ],
+        },
+    },
+    // Group 7.
+    Profile {
+        name: PROFILE_ASSETS,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_asset_intake",
+                "meister_asset_route",
+                "meister_asset_chain_get",
+            ],
+        },
+    },
+    // Groups 6 and 8.
+    Profile {
+        name: PROFILE_QA,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_rating_record",
+                "meister_accessibility_check",
+                "meister_content_summary",
+                "meister_playtest_define",
+                "meister_replay_check",
+                "meister_defect_record",
+            ],
+        },
+    },
+    // Groups 9–10. Never in a bundle: credential-adjacent, opt-in.
+    Profile {
+        name: PROFILE_RELEASE,
+        kind: ProfileKind::Base {
+            tools: &[
+                "meister_channel_list",
+                "meister_release_prepare",
+                "meister_preflight_run",
+                "meister_account_register",
+                "meister_account_inspect",
+                "meister_account_verify",
+            ],
+        },
+    },
+    Profile {
+        name: PROFILE_NIFLHEIM_FLOOR,
+        kind: ProfileKind::Bundle {
+            members: &[PROFILE_CORE, PROFILE_SYSTEMS, PROFILE_NARRATIVE],
+        },
+    },
+    Profile {
+        name: PROFILE_FULL,
+        kind: ProfileKind::Full,
+    },
+];
+
+/// The environment variable that selects the served profile at
+/// launch (COMPLIANCE.md §7).
+pub const ENV_PROFILE: &str = "MEISTER_PROFILE";
+
+/// The profile served when `MEISTER_PROFILE` is unset.
+pub const DEFAULT_PROFILE: &str = PROFILE_CORE;
+
+impl Profile {
+    /// True when this profile serves `spec`. Every profile serves
+    /// the core tools; `full` serves everything.
+    pub fn serves(&self, spec: &ToolSpec) -> bool {
+        let carried_by = |base: &&str| spec.profiles.contains(base);
+        match self.kind {
+            ProfileKind::Full => true,
+            ProfileKind::Base { .. } => carried_by(&PROFILE_CORE) || carried_by(&self.name),
+            ProfileKind::Bundle { members } => {
+                carried_by(&PROFILE_CORE) || members.iter().any(carried_by)
+            }
+        }
+    }
+}
+
+/// Look up one declared profile by name. Exact match only.
+pub fn profile_named(name: &str) -> Option<&'static Profile> {
+    PROFILES.iter().find(|profile| profile.name == name)
+}
+
+/// Resolve the launch profile from the raw `MEISTER_PROFILE` value:
+/// unset selects the default; a set value must name a declared
+/// profile exactly. Anything else — empty, mis-cased, padded, a
+/// list, not UTF-8 — is an error carrying the value as given; the
+/// caller refuses to start. There is no fallback.
+pub fn select_profile(raw: Option<&std::ffi::OsStr>) -> Result<&'static Profile, String> {
+    let Some(raw) = raw else {
+        return Ok(profile_named(DEFAULT_PROFILE).expect("the default profile is declared"));
+    };
+    raw.to_str()
+        .and_then(profile_named)
+        .ok_or_else(|| raw.to_string_lossy().into_owned())
+}
+
+/// The profiles a client can launch to reach `spec`, in declared
+/// order. `full` is left out: it carries every tool by definition
+/// and is for conformance and audit only, so it is never the
+/// answer to "where does this tool live".
+pub fn carrying_profiles(spec: &ToolSpec) -> Vec<&'static str> {
+    PROFILES
+        .iter()
+        .filter(|profile| !matches!(profile.kind, ProfileKind::Full) && profile.serves(spec))
+        .map(|profile| profile.name)
+        .collect()
+}
+
+/// A profile declaration the catalog refuses to serve under.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProfileError {
+    /// `core` (a base profile) or `full` is not declared as such.
+    MissingProfile(&'static str),
+    DuplicateProfile(String),
+    /// A base profile names a tool the catalog does not hold.
+    UnknownTool {
+        profile: String,
+        tool: String,
+    },
+    /// A tool carried by no base profile.
+    ToolWithoutProfile(String),
+    /// A tool's `profiles` names something that is not a declared
+    /// base profile.
+    UnknownProfile {
+        tool: String,
+        profile: String,
+    },
+    /// A tool's `profiles` and `PROFILES` disagree on who carries it.
+    MembershipMismatch {
+        tool: String,
+    },
+    BundleCarriesRelease(String),
+    /// A bundle member that is not a declared base profile.
+    BundleMemberNotBase {
+        bundle: String,
+        member: String,
+    },
+}
+
+impl std::fmt::Display for ProfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingProfile(name) => write!(f, "profile {name} is not declared"),
+            Self::DuplicateProfile(name) => write!(f, "profile {name} is declared twice"),
+            Self::UnknownTool { profile, tool } => {
+                write!(f, "profile {profile} names unknown tool {tool}")
+            }
+            Self::ToolWithoutProfile(tool) => write!(f, "tool {tool} is in no profile"),
+            Self::UnknownProfile { tool, profile } => {
+                write!(f, "tool {tool} names undeclared base profile {profile}")
+            }
+            Self::MembershipMismatch { tool } => write!(
+                f,
+                "tool {tool}: its profiles and the profile declarations disagree"
+            ),
+            Self::BundleCarriesRelease(bundle) => {
+                write!(f, "bundle {bundle} carries {PROFILE_RELEASE}")
+            }
+            Self::BundleMemberNotBase { bundle, member } => {
+                write!(f, "bundle {bundle} names {member}, not a base profile")
+            }
+        }
+    }
+}
+
+/// The own tools of the base profile `name`, if one is declared.
+fn base_tools(profiles: &[Profile], name: &str) -> Option<&'static [&'static str]> {
+    profiles.iter().find_map(|p| match p.kind {
+        ProfileKind::Base { tools } if p.name == name => Some(tools),
+        _ => None,
+    })
+}
+
+/// Check a profile declaration against a tool list of
+/// (name, profiles) pairs. The first violation is returned.
+///
+/// Laws: `core` is a base profile and `full` is the full profile;
+/// profile names are unique; a base profile names only catalog
+/// tools; a bundle names only base profiles and never `release`;
+/// every tool is carried by at least one base profile; and the two
+/// entries of the double entry — each tool's `profiles` and the
+/// base profiles naming it — are the same set.
+pub fn check_profiles(tools: &[(&str, &[&str])], profiles: &[Profile]) -> Result<(), ProfileError> {
+    if base_tools(profiles, PROFILE_CORE).is_none() {
+        return Err(ProfileError::MissingProfile(PROFILE_CORE));
+    }
+    if !profiles
+        .iter()
+        .any(|p| p.name == PROFILE_FULL && matches!(p.kind, ProfileKind::Full))
+    {
+        return Err(ProfileError::MissingProfile(PROFILE_FULL));
+    }
+    for (index, profile) in profiles.iter().enumerate() {
+        if profiles[..index].iter().any(|p| p.name == profile.name) {
+            return Err(ProfileError::DuplicateProfile(profile.name.to_string()));
+        }
+        match profile.kind {
+            ProfileKind::Base { tools: own } => {
+                for tool in own {
+                    if !tools.iter().any(|(name, _)| name == tool) {
+                        return Err(ProfileError::UnknownTool {
+                            profile: profile.name.to_string(),
+                            tool: (*tool).to_string(),
+                        });
+                    }
+                }
+            }
+            ProfileKind::Bundle { members } => {
+                for member in members {
+                    if *member == PROFILE_RELEASE {
+                        return Err(ProfileError::BundleCarriesRelease(profile.name.to_string()));
+                    }
+                    if base_tools(profiles, member).is_none() {
+                        return Err(ProfileError::BundleMemberNotBase {
+                            bundle: profile.name.to_string(),
+                            member: (*member).to_string(),
+                        });
+                    }
+                }
+            }
+            ProfileKind::Full => {}
+        }
+    }
+    for (tool, tagged) in tools {
+        if tagged.is_empty() {
+            return Err(ProfileError::ToolWithoutProfile((*tool).to_string()));
+        }
+        for tag in *tagged {
+            if base_tools(profiles, tag).is_none() {
+                return Err(ProfileError::UnknownProfile {
+                    tool: (*tool).to_string(),
+                    profile: (*tag).to_string(),
+                });
+            }
+        }
+        // Double entry: the base profiles naming this tool are
+        // exactly the tool's own `profiles`.
+        let declared = profiles.iter().filter(|p| match p.kind {
+            ProfileKind::Base { tools: own } => own.contains(tool),
+            _ => false,
+        });
+        let mut declared_count = 0usize;
+        for profile in declared {
+            declared_count += 1;
+            if !tagged.contains(&profile.name) {
+                return Err(ProfileError::MembershipMismatch {
+                    tool: (*tool).to_string(),
+                });
+            }
+        }
+        if declared_count != tagged.len() {
+            return Err(ProfileError::MembershipMismatch {
+                tool: (*tool).to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Check the shipped declaration: `PROFILES` against `specs()`.
+/// Run at startup, before anything is served.
+pub fn check_declared_profiles() -> Result<(), ProfileError> {
+    let all = specs();
+    let tools: Vec<(&str, &[&str])> = all.iter().map(|s| (s.name, s.profiles)).collect();
+    check_profiles(&tools, PROFILES)
+}
+
 /// The full catalog, in group order. Count: 31 tools (30 group
 /// seams + the live lane check). The >25 count carries its written
 /// reason in COMPLIANCE.md (Tiger Style MCP Rule 1).
@@ -171,6 +529,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 1,
             rung: 1,
             record_carrying: true,
+            profiles: &[PROFILE_CANON],
             description: "Create a Qompass game project with estate conventions and its genre pipeline pack selected at birth.",
             input: record_input(
                 &[
@@ -202,6 +561,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 1,
             rung: 1,
             record_carrying: false,
+            profiles: &[PROFILE_CORE],
             description: "Inspect one project record: engine shell, metadata, lane stamps, and cast and canon counts computed from the record set.",
             input: read_input(&[("project_id", s())], &["project_id"]),
             output: out_schema(&[
@@ -224,6 +584,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 1,
             rung: 1,
             record_carrying: false,
+            profiles: &[PROFILE_CORE],
             description: "List projects, bounded: limit defaults to 25, maximum 100, with a continuation cursor.",
             input: read_input(
                 &[
@@ -248,6 +609,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 2,
             rung: 1,
             record_carrying: true,
+            profiles: &[PROFILE_CANON],
             description: "Add a character identity record to a project's cast, born candidate and lane-stamped.",
             input: record_input(
                 &[
@@ -271,6 +633,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 2,
             rung: 1,
             record_carrying: true,
+            profiles: &[PROFILE_CANON],
             description: "Identity-lock a character at intake: silhouette, palette, face and body proportions, thumbnail recognisability. A hard gate before any detail work.",
             input: record_input(
                 &[
@@ -294,10 +657,22 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 2,
             rung: 1,
             record_carrying: false,
-            description: "Run the canon census over a project: every claim recomputed from its source artifact and SHA-256 (D-713); any unverified claim fails the census closed with the full census in the error body. Declares no visual PASS; the Owner's eye is the verdict.",
-            input: read_input(&[("project_id", s())], &["project_id"]),
+            profiles: &[PROFILE_CORE],
+            description: "Run the canon census over a project: every claim recomputed from its source artifact and SHA-256 (D-713); any unverified claim fails the census closed with the full census in the error body. The census records the state_hash it ran against; pass an earlier census's hash as prior_state_hash and a project that has changed since answers census_stale. Declares no visual PASS; the Owner's eye is the verdict.",
+            input: read_input(
+                &[
+                    ("project_id", s()),
+                    (
+                        "prior_state_hash",
+                        json!({"type": "string", "pattern": "^[0-9a-f]{64}$"}),
+                    ),
+                ],
+                &["project_id"],
+            ),
             output: out_schema(&[
                 ("project_id", s()),
+                ("state_hash", s()),
+                ("stale", boolean()),
                 ("checked", integer()),
                 ("unverified", integer()),
                 ("verdict", s()),
@@ -313,6 +688,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 3,
             rung: 2,
             record_carrying: true,
+            profiles: &[PROFILE_SYSTEMS],
             description: "Define a scene graph record: nodes, dialogue links, and composition for one scene.",
             input: record_input(
                 &[
@@ -330,6 +706,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 3,
             rung: 2,
             record_carrying: true,
+            profiles: &[PROFILE_SYSTEMS],
             description: "Define a game-systems record: schedule, flags, progression DAG, economy, state machine, or minigame, as a validated bounded record.",
             input: record_input(
                 &[
@@ -358,6 +735,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 3,
             rung: 2,
             record_carrying: false,
+            profiles: &[PROFILE_SYSTEMS],
             description: "Validate an authored scene record: malformed shapes are typed refusals, never crashes.",
             input: read_input(
                 &[("project_id", s()), ("scene_id", s())],
@@ -376,6 +754,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 4,
             rung: 3,
             record_carrying: true,
+            profiles: &[PROFILE_NARRATIVE],
             description: "Author dialogue as structured game data: lines, speakers, choices, and conditions — never loose prose.",
             input: record_input(
                 &[
@@ -393,6 +772,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 4,
             rung: 3,
             record_carrying: false,
+            profiles: &[PROFILE_NARRATIVE],
             description: "Read one authored dialogue record with its branching and continuity effects.",
             input: read_input(
                 &[("project_id", s()), ("dialogue_id", s())],
@@ -406,6 +786,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 4,
             rung: 3,
             record_carrying: true,
+            profiles: &[PROFILE_NARRATIVE],
             description: "Set a character's whole-body reaction profile for an emotion: posture, gesture, and stance — expression is never only a face.",
             input: record_input(
                 &[
@@ -434,6 +815,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 5,
             rung: 3,
             record_carrying: true,
+            profiles: &[PROFILE_NARRATIVE],
             description: "Define a story arc record: beats, quests and objectives, character arcs, and branching endings.",
             input: record_input(
                 &[
@@ -451,6 +833,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 5,
             rung: 3,
             record_carrying: true,
+            profiles: &[PROFILE_SYSTEMS],
             description: "Compose a level record: layout and scene composition, triggers, schedules, progression gates, and minigame placement.",
             input: record_input(
                 &[
@@ -469,6 +852,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 5,
             rung: 3,
             record_carrying: false,
+            profiles: &[PROFILE_NARRATIVE],
             description: "Generate deterministic playthroughs from the authored graph: every ending reached or the gap reported, never asserted.",
             input: read_input(
                 &[("project_id", s()), ("graph_ref", s())],
@@ -487,6 +871,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 6,
             rung: 6,
             record_carrying: true,
+            profiles: &[PROFILE_QA],
             description: "Record rating metadata for a project under one scheme (ESRB, PEGI, IARC) with its content descriptors.",
             input: record_input(
                 &[
@@ -505,6 +890,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 6,
             rung: 6,
             record_carrying: false,
+            profiles: &[PROFILE_QA],
             description: "Check a project's accessibility surfaces: photosafety flash and transition-rate hard limits, colour-vision-safe palettes, subtitle and text-scaling contracts.",
             input: read_input(&[("project_id", s())], &["project_id"]),
             output: out_schema(&[
@@ -521,6 +907,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 6,
             rung: 6,
             record_carrying: false,
+            profiles: &[PROFILE_QA],
             description: "Read a project's plain-language summary of what the game contains, with its content tags.",
             input: read_input(&[("project_id", s())], &["project_id"]),
             output: out_schema(&[("project_id", s()), ("summary", s()), ("tags", arr(s()))]),
@@ -532,6 +919,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 7,
             rung: 5,
             record_carrying: true,
+            profiles: &[PROFILE_ASSETS],
             description: "Intake one media artifact: hash, provenance (including art-tool provenance per asset), and routing record. Specialist work stays with its owner.",
             input: record_input(
                 &[
@@ -554,6 +942,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 7,
             rung: 5,
             record_carrying: true,
+            profiles: &[PROFILE_ASSETS],
             description: "Record a handoff of one asset to its owning specialist: lumen (media), eigenstyle (voice style), bloch (lessons), fathom (clean-room study). Meister re-implements nothing.",
             input: record_input(
                 &[
@@ -575,6 +964,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 7,
             rung: 5,
             record_carrying: false,
+            profiles: &[PROFILE_ASSETS],
             description: "Inspect one asset's keeper chain: governing reference, candidate history, gate reference. An incomplete chain is not a keeper.",
             input: read_input(
                 &[("project_id", s()), ("asset_id", s())],
@@ -593,6 +983,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 8,
             rung: 6,
             record_carrying: true,
+            profiles: &[PROFILE_QA],
             description: "Define a scripted playthrough: half validation, half adversarial, by construction (the estate test split).",
             input: record_input(
                 &[
@@ -610,6 +1001,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 8,
             rung: 6,
             record_carrying: false,
+            profiles: &[PROFILE_QA],
             description: "Check a deterministic replay against its recorded hash: same inputs, byte-identical run, or the divergence reported.",
             input: read_input(
                 &[("project_id", s()), ("playtest_id", s())],
@@ -627,6 +1019,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 8,
             rung: 6,
             record_carrying: true,
+            profiles: &[PROFILE_QA],
             description: "Record a defect tied to authored project state, so a failure names the record it belongs to.",
             input: record_input(
                 &[
@@ -646,6 +1039,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 9,
             rung: 8,
             record_carrying: false,
+            profiles: &[PROFILE_RELEASE],
             description: "List the SFW channel-target registry: platforms, content-policy notes, automation class, and handoff executor per channel. Capability, not intent.",
             input: read_input(&[], &[]),
             output: out_schema(&[("channels", arr(free_obj())), ("count", integer())]),
@@ -656,6 +1050,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 9,
             rung: 8,
             record_carrying: true,
+            profiles: &[PROFILE_RELEASE],
             description: "Prepare a channel handoff for a project and hand it to slipway or the channel executor. Meister never forks slipway's publish gates.",
             input: record_input(
                 &[("project_id", s()), ("channel", s())],
@@ -669,6 +1064,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 9,
             rung: 8,
             record_carrying: false,
+            profiles: &[PROFILE_RELEASE],
             description: "Run a publish preflight for one channel: refuses the handoff when the channel's auth is missing or unverified.",
             input: read_input(
                 &[("project_id", s()), ("channel", s())],
@@ -683,6 +1079,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 10,
             rung: 8,
             record_carrying: true,
+            profiles: &[PROFILE_RELEASE],
             description: "Register a channel account by credential REFERENCE: channel, account identity, credential kind, and where the value lives (a pass path or Secure Vault entry). Values are never accepted, stored, or returned.",
             input: record_input(
                 &[
@@ -701,6 +1098,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 10,
             rung: 8,
             record_carrying: false,
+            profiles: &[PROFILE_RELEASE],
             description: "Inspect a channel account record: scopes, expiry, and last-verified time. References and status only, never values.",
             input: read_input(
                 &[("channel", s()), ("account_id", s())],
@@ -720,6 +1118,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 10,
             rung: 8,
             record_carrying: false,
+            profiles: &[PROFILE_RELEASE],
             description: "Run the channel's verification probe for one account, where the channel supports one; channels with no API get honest login-reference records instead.",
             input: read_input(
                 &[("channel", s()), ("account_id", s())],
@@ -738,6 +1137,7 @@ pub fn specs() -> Vec<ToolSpec> {
             group: 0,
             rung: 0,
             record_carrying: false,
+            profiles: &[PROFILE_CORE],
             description: "Run the lane gate over a candidate record envelope and return its verdict (allow, or refuse with the typed lane code). Stores nothing; this is the Rung 0 gate, demonstrable.",
             input: read_input(
                 &[
@@ -761,10 +1161,12 @@ pub fn specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// The served tool definitions, built from the catalog.
-pub fn tool_definitions() -> Vec<Tool> {
+/// The tool definitions served under `profile`, built from the
+/// catalog, in catalog order.
+pub fn tool_definitions(profile: &Profile) -> Vec<Tool> {
     specs()
         .into_iter()
+        .filter(|spec| profile.serves(spec))
         .map(|spec| {
             let Value::Object(input_map) = spec.input else {
                 unreachable!("catalog input schemas are objects");
@@ -787,6 +1189,8 @@ pub fn spec_named(name: &str) -> Option<ToolSpec> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -831,6 +1235,379 @@ mod tests {
                     spec.name
                 );
             }
+        }
+    }
+
+    // ---------- profiles (EFLO-02): validation ----------
+
+    /// The served set a profile DECLARES, resolved from `PROFILES`
+    /// alone (never from the tools' own `profiles`), so it is an
+    /// independent oracle for the double entry.
+    fn declared_set(name: &str) -> BTreeSet<&'static str> {
+        let own = |base: &str| -> BTreeSet<&'static str> {
+            base_tools(PROFILES, base)
+                .expect("a declared base profile")
+                .iter()
+                .copied()
+                .collect()
+        };
+        let profile = PROFILES
+            .iter()
+            .find(|p| p.name == name)
+            .expect("a declared profile");
+        let mut set = own(PROFILE_CORE);
+        match profile.kind {
+            ProfileKind::Base { .. } => set.extend(own(name)),
+            ProfileKind::Bundle { members } => {
+                for member in members {
+                    set.extend(own(member));
+                }
+            }
+            ProfileKind::Full => set.extend(specs().iter().map(|s| s.name)),
+        }
+        set
+    }
+
+    fn catalog_tags() -> Vec<(&'static str, &'static [&'static str])> {
+        specs().iter().map(|s| (s.name, s.profiles)).collect()
+    }
+
+    #[test]
+    fn declared_profiles_pass_the_catalog_check() {
+        assert_eq!(check_declared_profiles(), Ok(()));
+        let names: Vec<&str> = PROFILES.iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            [
+                "core",
+                "canon",
+                "systems",
+                "narrative",
+                "assets",
+                "qa",
+                "release",
+                "niflheim-floor",
+                "full"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_tool_is_in_core_or_a_non_full_profile() {
+        let non_full: Vec<&str> = PROFILES
+            .iter()
+            .filter(|p| !matches!(p.kind, ProfileKind::Full))
+            .map(|p| p.name)
+            .collect();
+        for spec in specs() {
+            assert!(
+                non_full.iter().any(|p| declared_set(p).contains(spec.name)),
+                "{} is served by no non-full profile",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn full_equals_the_catalog_and_bundles_are_unions() {
+        let catalog: BTreeSet<&str> = specs().iter().map(|s| s.name).collect();
+        assert_eq!(declared_set(PROFILE_FULL), catalog);
+        let mut union = declared_set(PROFILE_CORE);
+        union.extend(declared_set(PROFILE_SYSTEMS));
+        union.extend(declared_set(PROFILE_NARRATIVE));
+        assert_eq!(declared_set(PROFILE_NIFLHEIM_FLOOR), union);
+        // Every bundle is a union of declared base profiles.
+        for profile in PROFILES {
+            if let ProfileKind::Bundle { members } = profile.kind {
+                for member in members {
+                    assert!(base_tools(PROFILES, member).is_some(), "{member}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn profile_membership_is_the_plan_of_record() {
+        // Served-set sizes: core, then core + the profile's own.
+        let sizes: Vec<(&str, usize)> = PROFILES
+            .iter()
+            .map(|p| (p.name, declared_set(p.name).len()))
+            .collect();
+        assert_eq!(
+            sizes,
+            [
+                ("core", 4),
+                ("canon", 7),
+                ("systems", 8),
+                ("narrative", 9),
+                ("assets", 7),
+                ("qa", 10),
+                ("release", 10),
+                ("niflheim-floor", 13),
+                ("full", 31)
+            ]
+        );
+        // Core is four tools, all read-only.
+        let core = declared_set(PROFILE_CORE);
+        for spec in specs() {
+            if core.contains(spec.name) {
+                assert_eq!(spec.annotations.read_only_hint, Some(true), "{}", spec.name);
+                assert!(!spec.record_carrying, "{}", spec.name);
+            }
+        }
+        // Group placement: 3 → systems, 4–5 → narrative (except
+        // level_compose → systems), 7 → assets, 6 and 8 → qa,
+        // 9–10 → release.
+        for spec in specs() {
+            let expected: &[&str] = match (spec.group, spec.name) {
+                (_, "meister_level_compose") | (3, _) => &[PROFILE_SYSTEMS],
+                (4 | 5, _) => &[PROFILE_NARRATIVE],
+                (7, _) => &[PROFILE_ASSETS],
+                (6 | 8, _) => &[PROFILE_QA],
+                (9 | 10, _) => &[PROFILE_RELEASE],
+                _ => continue,
+            };
+            assert_eq!(spec.profiles, expected, "{}", spec.name);
+        }
+    }
+
+    // ---------- profile selection (EFLO-03): validation ----------
+
+    #[test]
+    fn each_profile_serves_exactly_its_declared_set() {
+        // The serving path reads the tools' own `profiles`; the
+        // oracle reads `PROFILES`. They must agree for every profile.
+        for profile in PROFILES {
+            let served: BTreeSet<&str> = specs()
+                .iter()
+                .filter(|spec| profile.serves(spec))
+                .map(|spec| spec.name)
+                .collect();
+            assert_eq!(served, declared_set(profile.name), "{}", profile.name);
+            let listed: BTreeSet<String> = tool_definitions(profile)
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            let declared: BTreeSet<String> = declared_set(profile.name)
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect();
+            assert_eq!(listed, declared, "{}", profile.name);
+        }
+    }
+
+    #[test]
+    fn selection_defaults_to_core_and_takes_every_declared_name() {
+        assert_eq!(select_profile(None).unwrap().name, "core");
+        for profile in PROFILES {
+            let raw = std::ffi::OsString::from(profile.name);
+            assert_eq!(select_profile(Some(&raw)).unwrap().name, profile.name);
+        }
+    }
+
+    #[test]
+    fn carrying_profiles_name_where_a_tool_lives() {
+        let carriers = |name: &str| carrying_profiles(&spec_named(name).unwrap());
+        assert_eq!(
+            carriers("meister_scene_define"),
+            ["systems", "niflheim-floor"]
+        );
+        assert_eq!(carriers("meister_cast_lock"), ["canon"]);
+        assert_eq!(carriers("meister_account_verify"), ["release"]);
+        // A core tool lives in every launchable profile.
+        assert_eq!(carriers("meister_lane_check").len(), PROFILES.len() - 1);
+    }
+
+    // ---------- profiles (EFLO-02): adversarial ----------
+
+    mod adversarial {
+        use super::*;
+
+        #[test]
+        fn a_tool_with_no_profile_fails() {
+            let mut tools = catalog_tags();
+            tools.push(("meister_orphan", &[]));
+            assert_eq!(
+                check_profiles(&tools, PROFILES),
+                Err(ProfileError::ToolWithoutProfile("meister_orphan".into()))
+            );
+        }
+
+        #[test]
+        fn a_profile_naming_an_unknown_tool_fails() {
+            // The Rung 3 tools the plan places in `narrative` do not
+            // exist yet: declaring one early is exactly this failure.
+            let profiles = [
+                Profile {
+                    name: PROFILE_CORE,
+                    kind: ProfileKind::Base {
+                        tools: &["meister_lane_check"],
+                    },
+                },
+                Profile {
+                    name: PROFILE_NARRATIVE,
+                    kind: ProfileKind::Base {
+                        tools: &["meister_emit"],
+                    },
+                },
+                Profile {
+                    name: PROFILE_FULL,
+                    kind: ProfileKind::Full,
+                },
+            ];
+            let tools: [(&str, &[&str]); 1] = [("meister_lane_check", &[PROFILE_CORE])];
+            assert_eq!(
+                check_profiles(&tools, &profiles),
+                Err(ProfileError::UnknownTool {
+                    profile: "narrative".into(),
+                    tool: "meister_emit".into()
+                })
+            );
+        }
+
+        #[test]
+        fn a_bundle_containing_release_fails() {
+            let profiles = [
+                Profile {
+                    name: PROFILE_CORE,
+                    kind: ProfileKind::Base {
+                        tools: &["meister_lane_check"],
+                    },
+                },
+                Profile {
+                    name: PROFILE_RELEASE,
+                    kind: ProfileKind::Base {
+                        tools: &["meister_channel_list"],
+                    },
+                },
+                Profile {
+                    name: "ship-it",
+                    kind: ProfileKind::Bundle {
+                        members: &[PROFILE_CORE, PROFILE_RELEASE],
+                    },
+                },
+                Profile {
+                    name: PROFILE_FULL,
+                    kind: ProfileKind::Full,
+                },
+            ];
+            let tools: [(&str, &[&str]); 2] = [
+                ("meister_lane_check", &[PROFILE_CORE]),
+                ("meister_channel_list", &[PROFILE_RELEASE]),
+            ];
+            assert_eq!(
+                check_profiles(&tools, &profiles),
+                Err(ProfileError::BundleCarriesRelease("ship-it".into()))
+            );
+        }
+
+        #[test]
+        fn a_tool_whose_profiles_disagree_with_the_declaration_fails() {
+            // Tagged into a profile that does not name it.
+            let mut tools = catalog_tags();
+            let index = tools
+                .iter()
+                .position(|(name, _)| *name == "meister_cast_add")
+                .unwrap();
+            tools[index].1 = &[PROFILE_QA];
+            assert_eq!(
+                check_profiles(&tools, PROFILES),
+                Err(ProfileError::MembershipMismatch {
+                    tool: "meister_cast_add".into()
+                })
+            );
+            // Tagged into a profile nobody declared, a bundle, or full.
+            for bad in ["nope", PROFILE_NIFLHEIM_FLOOR, PROFILE_FULL] {
+                let tags = [bad];
+                let mut tools: Vec<(&str, &[&str])> = catalog_tags();
+                tools[index].1 = &tags;
+                assert_eq!(
+                    check_profiles(&tools, PROFILES),
+                    Err(ProfileError::UnknownProfile {
+                        tool: "meister_cast_add".into(),
+                        profile: bad.into()
+                    })
+                );
+            }
+        }
+
+        #[test]
+        fn selection_refuses_anything_but_an_exact_declared_name() {
+            for bad in [
+                "",
+                "nope",
+                "Core",
+                "CORE",
+                " core",
+                "core ",
+                "core,canon",
+                "core\n",
+            ] {
+                let raw = std::ffi::OsString::from(bad);
+                assert_eq!(
+                    select_profile(Some(&raw)).map(|p| p.name),
+                    Err(bad.to_string()),
+                    "{bad:?} must not select a profile"
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn selection_refuses_a_non_utf8_value() {
+            use std::os::unix::ffi::OsStrExt;
+            let raw = std::ffi::OsStr::from_bytes(b"core\xff");
+            assert!(select_profile(Some(raw)).is_err());
+        }
+
+        #[test]
+        fn no_launchable_profile_but_release_carries_a_release_tool() {
+            for spec in specs() {
+                if spec.group == 9 || spec.group == 10 {
+                    assert_eq!(carrying_profiles(&spec), ["release"], "{}", spec.name);
+                }
+            }
+        }
+
+        #[test]
+        fn malformed_declarations_fail() {
+            let tools: [(&str, &[&str]); 1] = [("meister_lane_check", &[PROFILE_CORE])];
+            let core = || Profile {
+                name: PROFILE_CORE,
+                kind: ProfileKind::Base {
+                    tools: &["meister_lane_check"],
+                },
+            };
+            let full = || Profile {
+                name: PROFILE_FULL,
+                kind: ProfileKind::Full,
+            };
+            assert_eq!(
+                check_profiles(&tools, &[full()]),
+                Err(ProfileError::MissingProfile(PROFILE_CORE))
+            );
+            assert_eq!(
+                check_profiles(&tools, &[core()]),
+                Err(ProfileError::MissingProfile(PROFILE_FULL))
+            );
+            assert_eq!(
+                check_profiles(&tools, &[core(), core(), full()]),
+                Err(ProfileError::DuplicateProfile("core".into()))
+            );
+            // A bundle of a bundle, or of an undeclared profile.
+            let nested = Profile {
+                name: "nested",
+                kind: ProfileKind::Bundle {
+                    members: &[PROFILE_FULL],
+                },
+            };
+            assert_eq!(
+                check_profiles(&tools, &[core(), nested, full()]),
+                Err(ProfileError::BundleMemberNotBase {
+                    bundle: "nested".into(),
+                    member: "full".into()
+                })
+            );
         }
     }
 }

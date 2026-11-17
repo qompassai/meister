@@ -1,0 +1,21 @@
+{
+  "id": "mini-05-no-judge",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "a minigame with no judge at all",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-mini-05-no-judge",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-mini-05-no-judge",
+    "kind": "minigame",
+    "spec": {
+      "rules": "call it"
+    }
+  }
+}

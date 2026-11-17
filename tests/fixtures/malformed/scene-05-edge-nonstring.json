@@ -1,0 +1,30 @@
+{
+  "id": "scene-05-edge-nonstring",
+  "tool": "meister_scene_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "an edge endpoint as a number",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-scene-05-edge-nonstring",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "scene_id": "mal-scene-05-edge-nonstring",
+    "graph": {
+      "nodes": [
+        {
+          "id": "a"
+        }
+      ],
+      "edges": [
+        {
+          "from": "a",
+          "to": 7
+        }
+      ]
+    }
+  }
+}

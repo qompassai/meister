@@ -1,0 +1,18 @@
+{
+  "id": "scene-03-graph-string",
+  "tool": "meister_scene_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: stringified JSON in local-model tool output (phlow lanes, estate record)",
+  "note": "the graph as a stringified JSON string",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-scene-03-graph-string",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "scene_id": "mal-scene-03-graph-string",
+    "graph": "{\"nodes\": []}"
+  }
+}

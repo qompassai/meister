@@ -1,0 +1,28 @@
+{
+  "id": "dag-02-dangling-prereq",
+  "tool": "meister_system_define",
+  "expected_code": "graph_dangling_ref",
+  "provenance": "observed-class: hallucinated cross-references in local-model output (night-queue units, 2026-11-16)",
+  "note": "a prerequisite on an undeclared node",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-dag-02-dangling-prereq",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-dag-02-dangling-prereq",
+    "kind": "progression_dag",
+    "spec": {
+      "nodes": [
+        {
+          "id": "a",
+          "requires": [
+            "ghost"
+          ]
+        }
+      ]
+    }
+  }
+}

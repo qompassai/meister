@@ -11,6 +11,11 @@
 //! are real: every session runs against a throwaway store root
 //! (`MEISTER_PROJECTS_ROOT`), and the full
 //! create → cast → lock → census flow is driven over the wire.
+//!
+//! Since EFLO-03 the server serves one surface profile per launch
+//! (`MEISTER_PROFILE`, default `core`). The pre-profile tests run
+//! on `full`, the conformance profile; the profile tests at the end
+//! launch every declared profile and pin its served set.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -40,14 +45,29 @@ fn rpc_store(
     store: &std::path::Path,
     requests: &[&str],
 ) -> Vec<serde_json::Value> {
+    rpc_profile(Some("full"), cwd, store, requests)
+}
+
+/// One session under `profile` (`None` leaves `MEISTER_PROFILE`
+/// unset: the default surface).
+fn rpc_profile(
+    profile: Option<&str>,
+    cwd: &std::path::Path,
+    store: &std::path::Path,
+    requests: &[&str],
+) -> Vec<serde_json::Value> {
     let bin = env!("CARGO_BIN_EXE_meister");
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .current_dir(cwd)
         .env("MEISTER_PROJECTS_ROOT", store)
+        .env_remove("MEISTER_PROFILE")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stdout(Stdio::piped());
+    if let Some(profile) = profile {
+        command.env("MEISTER_PROFILE", profile);
+    }
+    let mut child = command.spawn().unwrap();
     {
         let stdin = child.stdin.as_mut().unwrap();
         for req in requests {
@@ -172,20 +192,20 @@ fn lane_check_allows_sfw_qompass_over_the_wire() {
 
 #[test]
 fn sfw_envelope_reaches_the_seam() {
-    // A Group 3 seam (Rung 2): the allowed envelope still falls
+    // A Group 4 seam (Rung 3): the allowed envelope still falls
     // through the gate to the seam error, unchanged by Rung 1.
+    // (Group 3's tools all became real at Rung 2.)
     let req = call(
         1,
-        "meister_scene_define",
+        "meister_dialogue_author",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "p1", "scene_id": "s1",
-                           "graph": {}}),
+                           "project_id": "p1"}),
     );
     let resps = rpc(&[&discover(), &req]);
     assert_eq!(resps[1]["result"]["isError"], true);
     let body = result_json(&resps[1]);
     assert_eq!(body["error"]["code"], "not_implemented");
-    assert_eq!(body["error"]["rung"], 2);
+    assert_eq!(body["error"]["rung"], 3);
 }
 
 // ---------- adversarial ----------
@@ -395,13 +415,14 @@ fn rung1_full_flow_over_the_wire() {
     // Dependent calls go in separate sessions: rmcp dispatches
     // pipelined requests concurrently, so a lock must not share
     // a pipeline with the add it depends on.
-    let add = call(
-        2,
-        "meister_cast_add",
-        serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "wire-game", "character_id": "warden",
-                           "identity": wire_identity(&source)}),
-    );
+    // The cast record carries its own envelope record_id:
+    // STORE-03 holds record_ids unique per project, so it may not
+    // reuse the project record envelope id.
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(&source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
     let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
     let added = result_json(&resps[1]);
     assert_eq!(added["status"], "candidate", "cast_add body: {added}");
@@ -452,13 +473,14 @@ fn rung1_tampered_source_fails_the_census_over_the_wire() {
     let store = fresh_store();
     let source = fixture_file("tamper");
     let _ = wire_create(&store, &source);
-    let add = call(
-        2,
-        "meister_cast_add",
-        serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "wire-game", "character_id": "warden",
-                           "identity": wire_identity(&source)}),
-    );
+    // The cast record carries its own envelope record_id:
+    // STORE-03 holds record_ids unique per project, so it may not
+    // reuse the project record envelope id.
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(&source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
     let _ = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
     let lock = call(
         3,
@@ -480,6 +502,203 @@ fn rung1_tampered_source_fails_the_census_over_the_wire() {
     assert_eq!(body["error"]["code"], "canon_unverified");
     assert!(body["error"]["census"]["unverified"].as_u64().unwrap() > 0);
     assert_eq!(body["error"]["census"]["verdict"], "review");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn sys_a_kinds_work_over_the_wire() {
+    let store = fresh_store();
+    let source = fixture_file("sysa");
+    let _ = wire_create(&store, &source);
+    let define = |id: i64, system_id: &str, kind: &str, spec: serde_json::Value| {
+        let mut args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+            "project_id": "wire-game", "system_id": system_id,
+            "kind": kind, "spec": spec});
+        args["envelope"]["record_id"] = serde_json::json!(format!("rec-wire-{system_id}"));
+        call(id, "meister_system_define", args)
+    };
+    // Flags first: guards name the declared-flag namespace.
+    let flags = define(
+        2,
+        "core-flags",
+        "flags",
+        serde_json::json!({"flags": [
+            {"id": "met-warden", "type": "bool", "initial": false},
+            {"id": "depth", "type": "int", "initial": 1, "min": 0, "max": 12}
+        ]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &flags]);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["status"], "candidate", "flags body: {body}");
+    assert!(store.join("wire-game/systems/core-flags.json").is_file());
+    // A state machine whose guard references the declared flag.
+    let machine = define(
+        3,
+        "chamber",
+        "state_machine",
+        serde_json::json!({"states": ["sealed", "open", "cleared"],
+        "initial": "sealed", "terminal": ["cleared"],
+        "transitions": [
+            {"from": "sealed", "to": "open", "guard": "met-warden"},
+            {"from": "open", "to": "cleared"}
+        ]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &machine]);
+    assert_eq!(result_json(&resps[1])["kind"], "state_machine");
+    // A float economy amount is economy_float over the wire.
+    let economy = define(
+        4,
+        "market",
+        "economy",
+        serde_json::json!({"currencies": [{"id": "gold", "min": 0, "max": 99}],
+            "sources": [{"currency": "gold", "amount": 2.5}]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &economy]);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "economy_float", "body: {body}");
+    assert!(!store.join("wire-game/systems/market.json").exists());
+    // A progression cycle is graph_cycle over the wire.
+    let dag = define(
+        5,
+        "descent",
+        "progression_dag",
+        serde_json::json!({"nodes": [
+            {"id": "a", "requires": ["b"]},
+            {"id": "b", "requires": ["a"]}
+        ]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &dag]);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "graph_cycle", "body: {body}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+/// Build the locked wire project and return its passing census.
+fn wire_locked_project(store: &std::path::Path, source: &std::path::Path) -> serde_json::Value {
+    let _ = wire_create(store, source);
+    // The cast record carries its own envelope record_id
+    // (STORE-03: record_ids are unique per project).
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
+    let _ = rpc_store(&std::env::temp_dir(), store, &[&discover(), &add]);
+    let lock = call(
+        3,
+        "meister_cast_lock",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "lock": wire_lock(source)}),
+    );
+    let _ = rpc_store(&std::env::temp_dir(), store, &[&discover(), &lock]);
+    let check = call(
+        4,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), store, &[&discover(), &check]);
+    assert_eq!(resps[1]["result"]["isError"], false);
+    result_json(&resps[1])
+}
+
+#[test]
+fn store02_census_names_its_state_and_repeats_byte_identically() {
+    let store = fresh_store();
+    let source = fixture_file("state");
+    let census = wire_locked_project(&store, &source);
+    let state_hash = census["state_hash"].as_str().unwrap();
+    assert_eq!(state_hash.len(), 64);
+    assert_eq!(census["stale"], false);
+    // Two more runs in two more processes: the same bytes, and a
+    // census pinned to the current state is current.
+    let plain = call(
+        5,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game"}),
+    );
+    let pinned = call(
+        6,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game", "prior_state_hash": state_hash}),
+    );
+    let one = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &plain]);
+    let two = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &pinned]);
+    assert_eq!(result_text(&one[1]), census.to_string());
+    assert_eq!(result_text(&two[1]), census.to_string());
+    // The served schema carries the new fields: the contract, not
+    // just the behaviour.
+    let list = request(7, "tools/list", serde_json::json!({}));
+    let resps = rpc(&[&discover(), &list]);
+    let tool = resps[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "meister_canon_check")
+        .unwrap()
+        .clone();
+    let required = tool["outputSchema"]["required"].as_array().unwrap();
+    for field in ["state_hash", "stale"] {
+        assert!(required.iter().any(|r| r == field), "{field} not required");
+        assert!(census.get(field).is_some(), "{field} missing from the body");
+    }
+    assert_eq!(
+        tool["outputSchema"]["properties"]["stale"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        tool["inputSchema"]["properties"]["prior_state_hash"]["pattern"],
+        "^[0-9a-f]{64}$"
+    );
+    assert_eq!(
+        tool["inputSchema"]["required"],
+        serde_json::json!(["project_id"])
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn adv_store02_a_write_after_the_census_answers_census_stale_and_writes_nothing() {
+    let store = fresh_store();
+    let source = fixture_file("stale");
+    let census = wire_locked_project(&store, &source);
+    let held = census["state_hash"].as_str().unwrap();
+    // A write after the census: a second character.
+    let add = call(
+        5,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "herald",
+                           "identity": wire_identity(&source)}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
+    assert_eq!(result_json(&resps[1])["status"], "candidate");
+    let before = tree_digest(&store);
+    let stale = call(
+        6,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game", "prior_state_hash": held}),
+    );
+    let malformed = call(
+        7,
+        "meister_canon_check",
+        serde_json::json!({"project_id": "wire-game", "prior_state_hash": "not-a-hash"}),
+    );
+    let resps = rpc_store(
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &stale, &malformed],
+    );
+    assert_eq!(resps[1]["result"]["isError"], true);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "census_stale");
+    assert_eq!(body["error"]["census"]["stale"], true);
+    assert_eq!(body["error"]["census"]["verdict"], "review");
+    assert_ne!(body["error"]["census"]["state_hash"], held);
+    // A prior that is not a hash is refused, never read as "no
+    // prior".
+    assert_eq!(result_json(&resps[2])["error"]["code"], "invalid_input");
+    assert_eq!(tree_digest(&store), before, "a refused census wrote");
     let _ = std::fs::remove_dir_all(&store);
 }
 
@@ -543,4 +762,388 @@ fn malformed_json_is_a_parse_error_and_the_server_survives() {
         .find(|r| r["id"] == 5)
         .expect("the post-garbage call answered");
     assert_eq!(result_json(check_resp)["verdict"], "allow");
+}
+
+// ---------- EFLO-03: surface profiles, over the wire ----------
+
+const CORE: [&str; 4] = [
+    "meister_canon_check",
+    "meister_lane_check",
+    "meister_project_inspect",
+    "meister_project_list",
+];
+const CANON_OWN: [&str; 3] = [
+    "meister_cast_add",
+    "meister_cast_lock",
+    "meister_project_create",
+];
+const SYSTEMS_OWN: [&str; 4] = [
+    "meister_level_compose",
+    "meister_scene_define",
+    "meister_scene_validate",
+    "meister_system_define",
+];
+const NARRATIVE_OWN: [&str; 5] = [
+    "meister_dialogue_author",
+    "meister_dialogue_get",
+    "meister_playtest_generate",
+    "meister_reaction_set",
+    "meister_story_define",
+];
+const ASSETS_OWN: [&str; 3] = [
+    "meister_asset_chain_get",
+    "meister_asset_intake",
+    "meister_asset_route",
+];
+const QA_OWN: [&str; 6] = [
+    "meister_accessibility_check",
+    "meister_content_summary",
+    "meister_defect_record",
+    "meister_playtest_define",
+    "meister_rating_record",
+    "meister_replay_check",
+];
+const RELEASE_OWN: [&str; 6] = [
+    "meister_account_inspect",
+    "meister_account_register",
+    "meister_account_verify",
+    "meister_channel_list",
+    "meister_preflight_run",
+    "meister_release_prepare",
+];
+
+/// The declared profiles and their served sets, written out here
+/// independently of the catalog (COMPLIANCE.md §3): each entry is
+/// the profile name and the tool groups it serves on top of core.
+fn declared_profiles() -> Vec<(&'static str, Vec<&'static str>)> {
+    let with_core = |own: &[&[&'static str]]| {
+        let mut set: Vec<&'static str> = CORE.to_vec();
+        for part in own {
+            set.extend_from_slice(part);
+        }
+        set.sort_unstable();
+        set
+    };
+    vec![
+        ("core", with_core(&[])),
+        ("canon", with_core(&[&CANON_OWN])),
+        ("systems", with_core(&[&SYSTEMS_OWN])),
+        ("narrative", with_core(&[&NARRATIVE_OWN])),
+        ("assets", with_core(&[&ASSETS_OWN])),
+        ("qa", with_core(&[&QA_OWN])),
+        ("release", with_core(&[&RELEASE_OWN])),
+        ("niflheim-floor", with_core(&[&SYSTEMS_OWN, &NARRATIVE_OWN])),
+        (
+            "full",
+            with_core(&[
+                &CANON_OWN,
+                &SYSTEMS_OWN,
+                &NARRATIVE_OWN,
+                &ASSETS_OWN,
+                &QA_OWN,
+                &RELEASE_OWN,
+            ]),
+        ),
+    ]
+}
+
+/// The tool names one launch serves, sorted.
+fn served_names(profile: Option<&str>) -> Vec<String> {
+    let list = request(2, "tools/list", serde_json::json!({}));
+    let resps = rpc_profile(
+        profile,
+        &std::env::temp_dir(),
+        &fresh_store(),
+        &[&discover(), &list],
+    );
+    let mut names: Vec<String> = resps[1]["result"]["tools"]
+        .as_array()
+        .expect("a tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// A digest of every path and every file's bytes under `root`
+/// (a missing root digests as empty). Equal digests before and
+/// after a call mean the call wrote nothing.
+fn tree_digest(root: &std::path::Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn walk(dir: &std::path::Path, entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+        let Ok(read) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                entries.push((path.clone(), None));
+                walk(&path, entries);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                entries.push((path, Some(bytes)));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    walk(root, &mut entries);
+    entries.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Launch under a refused `MEISTER_PROFILE` value and return
+/// (exit code, stdout, stderr). A discover and a tools/list are
+/// offered on stdin: a server that started anyway would answer.
+fn launch_refused(value: &str) -> (Option<i32>, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_meister"))
+        .current_dir(std::env::temp_dir())
+        .env("MEISTER_PROJECTS_ROOT", fresh_store())
+        .env("MEISTER_PROFILE", value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        // The server may already have exited: a broken pipe here
+        // is the expected outcome, not a test failure.
+        let stdin = child.stdin.as_mut().unwrap();
+        let list = request(2, "tools/list", serde_json::json!({}));
+        let _ = writeln!(stdin, "{}", discover());
+        let _ = writeln!(stdin, "{list}");
+    }
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+// ---------- validation ----------
+
+#[test]
+fn every_declared_profile_serves_its_declared_set() {
+    for (profile, expected) in declared_profiles() {
+        assert_eq!(served_names(Some(profile)), expected, "profile {profile}");
+    }
+}
+
+#[test]
+fn the_default_profile_is_core() {
+    let unset = served_names(None);
+    assert_eq!(unset, CORE);
+    assert_eq!(unset, served_names(Some("core")));
+}
+
+#[test]
+fn in_profile_calls_run_under_their_profile() {
+    // canon carries Group 1–2 writes: a create is real.
+    let store = fresh_store();
+    let create = call(
+        1,
+        "meister_project_create",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "name": "Profile Game", "engine": "bevy",
+                           "genre_pack": "puzzle"}),
+    );
+    let resps = rpc_profile(
+        Some("canon"),
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &create],
+    );
+    assert_eq!(resps[1]["result"]["isError"], false);
+    assert!(store.join("profile-game/project.json").is_file());
+    // core reads what canon wrote.
+    let inspect = call(
+        1,
+        "meister_project_inspect",
+        serde_json::json!({"project_id": "profile-game"}),
+    );
+    let resps = rpc_profile(
+        None,
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &inspect],
+    );
+    assert_eq!(result_json(&resps[1])["project_id"], "profile-game");
+    // The bundle carries Group 4: the call reaches its seam.
+    let scene = call(
+        1,
+        "meister_dialogue_author",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "profile-game"}),
+    );
+    let resps = rpc_profile(
+        Some("niflheim-floor"),
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &scene],
+    );
+    assert_eq!(result_json(&resps[1])["error"]["code"], "not_implemented");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+// ---------- adversarial ----------
+
+#[test]
+fn adv_unknown_profile_exits_nonzero_before_serving_anything() {
+    for value in ["nope", "", "Core", "core,canon", " core", "full "] {
+        let (code, stdout, stderr) = launch_refused(value);
+        assert_eq!(code, Some(2), "{value:?} must refuse to start");
+        assert!(stdout.is_empty(), "{value:?} served: {stdout}");
+        assert!(
+            stderr.contains("refusing to start: unknown_profile"),
+            "{value:?} stderr: {stderr}"
+        );
+        // The typed message names the declared profiles.
+        assert!(stderr.contains("niflheim-floor"), "stderr: {stderr}");
+    }
+}
+
+#[test]
+fn adv_out_of_profile_call_is_group_not_loaded_never_unknown_tool() {
+    let read = call(
+        1,
+        "meister_dialogue_get",
+        serde_json::json!({"project_id": "p1", "dialogue_id": "d1"}),
+    );
+    let write = call(
+        2,
+        "meister_cast_add",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "project_id": "p1", "character_id": "c1",
+                           "identity": {}}),
+    );
+    let nope = call(3, "meister_nope", serde_json::json!({}));
+    let resps = rpc_profile(
+        None,
+        &std::env::temp_dir(),
+        &fresh_store(),
+        &[&discover(), &read, &write, &nope],
+    );
+    for (resp, tool, carriers) in [
+        (
+            &resps[1],
+            "meister_dialogue_get",
+            serde_json::json!(["narrative", "niflheim-floor"]),
+        ),
+        (&resps[2], "meister_cast_add", serde_json::json!(["canon"])),
+    ] {
+        assert_eq!(resp["result"]["isError"], true);
+        let body = result_json(resp);
+        assert_eq!(body["error"]["code"], "group_not_loaded", "{tool}");
+        assert_eq!(body["error"]["tool"], tool);
+        assert_eq!(body["error"]["active_profile"], "core");
+        assert_eq!(body["error"]["profiles"], carriers);
+        assert_ne!(body["error"], "unknown tool");
+    }
+    // A name the catalog does not hold is still unknown.
+    assert_eq!(result_json(&resps[3])["error"], "unknown tool");
+}
+
+#[test]
+fn adv_lane_gate_refuses_before_the_profile_check() {
+    // Out of profile AND off-lane, under every profile that does
+    // not carry the tool: the lane code wins and the answer never
+    // says where the tool lives.
+    for profile in ["core", "systems", "release"] {
+        let nsfw = call(
+            1,
+            "meister_cast_add",
+            serde_json::json!({"envelope": envelope("nsfw", "qompass"),
+                               "project_id": "p1", "character_id": "c1",
+                               "identity": {}}),
+        );
+        let unlabelled = call(
+            2,
+            "meister_cast_add",
+            serde_json::json!({"envelope": {"record_id": "rec-wire-2",
+                                            "origin_lane": "qompass",
+                                            "evidence": "no label"},
+                               "project_id": "p1", "character_id": "c1",
+                               "identity": {}}),
+        );
+        let resps = rpc_profile(
+            Some(profile),
+            &std::env::temp_dir(),
+            &fresh_store(),
+            &[&discover(), &nsfw, &unlabelled],
+        );
+        let body = result_json(&resps[1]);
+        assert_eq!(body["error"]["code"], "lane_mismatch", "profile {profile}");
+        assert!(body["error"].get("profiles").is_none());
+        assert!(!result_text(&resps[1]).contains("canon"));
+        assert_eq!(
+            result_json(&resps[2])["error"]["code"],
+            "lane_unclassified",
+            "profile {profile}"
+        );
+    }
+}
+
+#[test]
+fn adv_out_of_profile_refusals_are_pre_mutation() {
+    // A populated store, then out-of-profile writes against it
+    // under core: every one is refused and the tree is unchanged.
+    let store = fresh_store();
+    let source = fixture_file("profile-premutation");
+    let _ = wire_create(&store, &source);
+    let before = tree_digest(&store);
+    assert_ne!(
+        before,
+        tree_digest(&fresh_store()),
+        "the store is populated"
+    );
+    let create = call(
+        1,
+        "meister_project_create",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "name": "Second Game", "engine": "bevy",
+                           "genre_pack": "puzzle"}),
+    );
+    // The cast record carries its own envelope record_id:
+    // STORE-03 holds record_ids unique per project, so it may not
+    // reuse the project record envelope id.
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(&source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
+    let nsfw = call(
+        3,
+        "meister_cast_lock",
+        serde_json::json!({"envelope": envelope("nsfw", "qompass"),
+                           "project_id": "wire-game", "character_id": "warden",
+                           "lock": wire_lock(&source)}),
+    );
+    let resps = rpc_profile(
+        Some("core"),
+        &std::env::temp_dir(),
+        &store,
+        &[&discover(), &create, &add, &nsfw],
+    );
+    assert_eq!(result_json(&resps[1])["error"]["code"], "group_not_loaded");
+    assert_eq!(result_json(&resps[2])["error"]["code"], "group_not_loaded");
+    assert_eq!(result_json(&resps[3])["error"]["code"], "lane_mismatch");
+    assert_eq!(
+        tree_digest(&store),
+        before,
+        "a refused call wrote to the store"
+    );
+    assert!(!store.join("second-game").exists());
+    // Against an absent store the refusal does not create the root.
+    let empty = fresh_store();
+    let _ = rpc_profile(
+        Some("core"),
+        &std::env::temp_dir(),
+        &empty,
+        &[&discover(), &create],
+    );
+    assert!(!empty.exists(), "a refused call created the store root");
+    let _ = std::fs::remove_dir_all(&store);
 }

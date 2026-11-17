@@ -1,0 +1,25 @@
+{
+  "id": "scene-02-node-no-id",
+  "tool": "meister_scene_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "a scene node with no id",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-scene-02-node-no-id",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "scene_id": "mal-scene-02-node-no-id",
+    "graph": {
+      "nodes": [
+        {
+          "kind": "beat"
+        }
+      ],
+      "edges": []
+    }
+  }
+}

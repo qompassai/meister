@@ -1,0 +1,25 @@
+{
+  "id": "mini-03-judge-short-hash",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "a judge hash that is not 64 hex characters",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-mini-03-judge-short-hash",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-mini-03-judge-short-hash",
+    "kind": "minigame",
+    "spec": {
+      "rules": "call it",
+      "judge": {
+        "path": "judges/coin.txt",
+        "sha256": "abc123"
+      }
+    }
+  }
+}

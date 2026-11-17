@@ -1,0 +1,33 @@
+{
+  "id": "eco-04-sink-undeclared",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: hallucinated cross-references in local-model output (night-queue units, 2026-11-16)",
+  "note": "a sink on an undeclared currency",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-eco-04-sink-undeclared",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-eco-04-sink-undeclared",
+    "kind": "economy",
+    "spec": {
+      "currencies": [
+        {
+          "id": "gold",
+          "min": 0,
+          "max": 99
+        }
+      ],
+      "sinks": [
+        {
+          "currency": "silver",
+          "amount": 1
+        }
+      ]
+    }
+  }
+}

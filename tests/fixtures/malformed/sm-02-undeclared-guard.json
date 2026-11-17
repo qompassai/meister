@@ -1,0 +1,35 @@
+{
+  "id": "sm-02-undeclared-guard",
+  "tool": "meister_system_define",
+  "expected_code": "flag_undeclared",
+  "provenance": "observed-class: hallucinated cross-references in local-model output (night-queue units, 2026-11-16)",
+  "note": "a guard naming a flag no flags record declares",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sm-02-undeclared-guard",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sm-02-undeclared-guard",
+    "kind": "state_machine",
+    "spec": {
+      "states": [
+        "sealed",
+        "open"
+      ],
+      "initial": "sealed",
+      "terminal": [
+        "open"
+      ],
+      "transitions": [
+        {
+          "from": "sealed",
+          "to": "open",
+          "guard": "never-declared"
+        }
+      ]
+    }
+  }
+}

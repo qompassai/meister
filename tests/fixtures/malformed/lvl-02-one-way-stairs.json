@@ -1,0 +1,57 @@
+{
+  "id": "lvl-02-one-way-stairs",
+  "tool": "meister_level_compose",
+  "expected_code": "descent_violation",
+  "provenance": "synthetic-classic",
+  "note": "stairs that only descend (D-1659: the player also ascends)",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-lvl-02-one-way-stairs",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "level_id": "mal-lvl-02-one-way-stairs",
+    "layout": {
+      "floors": [
+        {
+          "floor_id": "floor-1",
+          "chambers": [
+            {
+              "id": "cell"
+            }
+          ],
+          "entry_points": [
+            {
+              "id": "landing"
+            }
+          ],
+          "doors": []
+        },
+        {
+          "floor_id": "floor-2",
+          "chambers": [
+            {
+              "id": "cell"
+            }
+          ],
+          "entry_points": [
+            {
+              "id": "landing"
+            }
+          ],
+          "doors": []
+        }
+      ],
+      "stairs": [
+        {
+          "id": "s1",
+          "from_floor": "floor-1",
+          "to_floor": "floor-2",
+          "direction": "down"
+        }
+      ]
+    }
+  }
+}

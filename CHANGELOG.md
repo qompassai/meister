@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0 — 2026-11-17
+
+- Rung 2 — EFLO profiles, the store guarantees, and systems
+  authoring (branch `pax/rung2-systems-profiles-20261116`;
+  unmerged and unpublished — the version names the branch
+  state GATE-2 verified).
+- EFLO: surface profiles selected at launch by
+  `MEISTER_PROFILE` (core, canon, systems, narrative, assets,
+  qa, release, the niflheim-floor bundle, and full for audit).
+  `tools/list` serves the launched profile; a call outside it
+  answers `group_not_loaded` after the lane gate, naming the
+  profiles that carry the tool. The agent card carries one
+  invocation entry per profile. EFLO.md measures every
+  profile with a real tokenizer: niflheim-floor is 2,436 of
+  the 2,500-token budget; full is audit-only and over, with
+  the waiver recorded in COMPLIANCE.md §3.
+- Store guarantees: a cross-process advisory lock serializes
+  mutations across server processes (`store_busy` after a
+  10 s bound, nothing written); the census carries a state
+  hash and reports staleness against a caller-presented pin
+  (`census_stale`); reference integrity (`canon_orphan`) and
+  per-project record-id uniqueness (`record_id_duplicate`)
+  are counted census claims.
+- Group 3 is real: `meister_system_define` validates flags,
+  state machines, progression DAGs, economies, schedules,
+  and minigames over a shared bounded graph validator;
+  `meister_scene_define` and `meister_scene_validate` cover
+  scene graphs; `meister_level_compose` composes levels
+  structurally under the descent law (D-1659) — entry points
+  and doors are first-class, stairs pair adjacent floors in
+  both directions — while narrative fields refuse
+  `not_implemented_until_rung3` until Rung 3. Eleven of 31
+  tools are live; twenty seams remain.
+- SYS-10: a 51-fixture malformed-input corpus
+  (`tests/fixtures/malformed/`), every fixture refused with
+  its expected typed code and the store byte-identical.
+- SYS-11: Niflheim Floor 12 authored end to end through the
+  tools in a throwaway store (census 14/0). Two shape gaps
+  are recorded for a later rung: recommended prerequisites
+  are inexpressible in a progression DAG, and level chambers
+  do not reference scene records.
+
 ## 0.2.0 — 2026-11-16
 
 - Rung 1 — Scaffolding and canon (D-1660). Groups 1–2 are real

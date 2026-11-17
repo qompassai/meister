@@ -1,0 +1,26 @@
+{
+    "asked": "Rung 2 promotion of the meister_canon_check tool schema (STORE-02): the census output gains state_hash (SHA-256 over the canonical record state) and stale, and the input gains the optional prior_state_hash with which the caller presents the state its last census saw.",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 2 \u2014 Systems, profiles, and store hardening; STORE-02); coordinator gate on the committed tree: cargo test 112 passed / 0 failed, clippy and fmt clean; EFLO.md re-measured (core 815 tokens)",
+    "origin_lane": "qompass",
+    "outcome_id": "rung2-meister_canon_check",
+    "produced": [
+        {
+            "path": "tools/list#meister_canon_check",
+            "sha256": "6c60223d17ad4fd3aaa7aaf1851e14cc167b21efc8787505f6862f083921a1cc"
+        }
+    ],
+    "recorded_at_epoch": 1794893468,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-mcp",
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}

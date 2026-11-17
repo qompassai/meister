@@ -1,0 +1,34 @@
+{
+  "id": "dag-01-cycle",
+  "tool": "meister_system_define",
+  "expected_code": "graph_cycle",
+  "provenance": "synthetic-classic",
+  "note": "two nodes requiring each other",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-dag-01-cycle",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-dag-01-cycle",
+    "kind": "progression_dag",
+    "spec": {
+      "nodes": [
+        {
+          "id": "a",
+          "requires": [
+            "b"
+          ]
+        },
+        {
+          "id": "b",
+          "requires": [
+            "a"
+          ]
+        }
+      ]
+    }
+  }
+}

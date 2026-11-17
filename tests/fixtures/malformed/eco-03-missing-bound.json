@@ -1,0 +1,26 @@
+{
+  "id": "eco-03-missing-bound",
+  "tool": "meister_system_define",
+  "expected_code": "economy_unbounded",
+  "provenance": "synthetic-classic",
+  "note": "a currency with no max bound",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-eco-03-missing-bound",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-eco-03-missing-bound",
+    "kind": "economy",
+    "spec": {
+      "currencies": [
+        {
+          "id": "gold",
+          "min": 0
+        }
+      ]
+    }
+  }
+}

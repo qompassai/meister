@@ -1,0 +1,32 @@
+{
+  "id": "flags-01-duplicate",
+  "tool": "meister_system_define",
+  "expected_code": "flag_duplicate",
+  "provenance": "synthetic-classic",
+  "note": "the same flag declared twice",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-flags-01-duplicate",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-flags-01-duplicate",
+    "kind": "flags",
+    "spec": {
+      "flags": [
+        {
+          "id": "met-warden",
+          "type": "bool",
+          "initial": false
+        },
+        {
+          "id": "met-warden",
+          "type": "bool",
+          "initial": true
+        }
+      ]
+    }
+  }
+}

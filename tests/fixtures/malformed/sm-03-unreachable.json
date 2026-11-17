@@ -1,0 +1,33 @@
+{
+  "id": "sm-03-unreachable",
+  "tool": "meister_system_define",
+  "expected_code": "graph_unreachable",
+  "provenance": "synthetic-classic",
+  "note": "a non-terminal state no path reaches",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sm-03-unreachable",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sm-03-unreachable",
+    "kind": "state_machine",
+    "spec": {
+      "states": [
+        "sealed",
+        "open",
+        "side-room"
+      ],
+      "initial": "sealed",
+      "terminal": [],
+      "transitions": [
+        {
+          "from": "sealed",
+          "to": "open"
+        }
+      ]
+    }
+  }
+}
