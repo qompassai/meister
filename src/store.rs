@@ -996,12 +996,6 @@ impl Store {
             .get("layout")
             .filter(|v| v.is_object())
             .ok_or_else(|| StoreError::invalid_record("layout must be an object"))?;
-        if layout.get("narrative").is_some_and(|v| !v.is_null()) {
-            return Err(StoreError::new(
-                "not_implemented_until_rung3",
-                "level narrative fields become real at Rung 3",
-            ));
-        }
         let triggers = match args.get("triggers") {
             None => Vec::new(),
             Some(value) => value
@@ -1009,16 +1003,6 @@ impl Store {
                 .cloned()
                 .ok_or_else(|| StoreError::invalid_record("triggers must be an array"))?,
         };
-        for trigger in &triggers {
-            if trigger.get("dialogue").is_some_and(|v| !v.is_null())
-                || trigger.get("narrative").is_some_and(|v| !v.is_null())
-            {
-                return Err(StoreError::new(
-                    "not_implemented_until_rung3",
-                    "trigger dialogue and narrative fields become real at Rung 3",
-                ));
-            }
-        }
         let mut dag_ids: BTreeSet<String> = BTreeSet::new();
         let mut minigame_ids: BTreeSet<String> = BTreeSet::new();
         for (_, record) in self.read_system_records(&project_id)? {
@@ -1037,6 +1021,7 @@ impl Store {
             }
         }
         let floor_count = validate_descent_layout(layout, &dag_ids, &minigame_ids)?;
+        validate_level_narrative(self, &project_id, layout, &triggers)?;
         let file = self.level_file(&project_id, &level_id);
         if file.exists() {
             return Err(StoreError::new(
@@ -1048,12 +1033,16 @@ impl Store {
             .get("envelope")
             .cloned()
             .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let level_flags = self.declared_flags(&project_id)?;
+        let unlock = validate_unlock(args, &level_flags)?;
         let record = json!({
             "record_type": "meister_level",
             "schema_version": 1,
             "project_id": project_id,
             "level_id": level_id,
             "status": "candidate",
+            "unit_state": "ungated",
+            "unlock": unlock,
             "envelope": envelope,
             "layout": layout,
             "triggers": triggers,
@@ -2167,12 +2156,14 @@ impl Census {
         }
         let systems = store.read_system_records(project_id)?;
         let mut census_extra = systems.clone();
-        for family in ["scenes", "levels"] {
+        for family in ["scenes", "levels", "narrative"] {
             census_extra.extend(store.read_family_records(project_id, family)?);
         }
         let (references, duplicate_ids) =
             census_references(&mut b, store, project_id, &project, &cast, &census_extra);
         census_systems(&mut b, &project_dir, &systems);
+        let (sanitization_hits, differentiation) =
+            census_narrative_checks(&mut b, store, project_id, &project_dir, &cast)?;
         let stale_reason = staleness(&state_hash, &store.state_hash(project_id)?, prior);
         let stale = stale_reason.is_some();
         let stale_reason = stale_reason.unwrap_or_default();
@@ -2201,7 +2192,9 @@ impl Census {
                 "references_checked": references,
                 "duplicate_record_ids": duplicate_ids,
                 "system_records": systems.len(),
+                "sanitization_hits": sanitization_hits,
             },
+            "differentiation": differentiation,
             "checks": b.checks,
             "failures": b.failures,
         });
@@ -2213,6 +2206,189 @@ impl Census {
             stale_reason,
         })
     }
+}
+
+/// NAR-05: sanitization and differentiation, as census claims
+/// and reports.
+///
+/// Sanitization: when the project carries a `denylist.json`
+/// record (`{terms: [...]}` — the teaching games' law: no
+/// studio name, no real project, no real person in shipped
+/// text), every shippable text field of the narrative records
+/// is scanned: dialogue line text and choice labels, story
+/// beat titles and quest titles. A hit is an unverified claim
+/// locating the field; the text is never silently edited.
+///
+/// Differentiation: for each cast pair, a shared display name
+/// is a collision outright (an unverified claim); descriptor
+/// overlap is reported as a Jaccard number in the body — the
+/// machine reports, the Owner decides.
+fn census_narrative_checks(
+    b: &mut CensusBuilder,
+    store: &Store,
+    project_id: &str,
+    project_dir: &Path,
+    cast: &[Value],
+) -> StoreResult<(usize, Vec<Value>)> {
+    let mut hits = 0usize;
+    let denylist_path = project_dir.join("denylist.json");
+    if denylist_path.exists() {
+        let raw = fs::read_to_string(&denylist_path)
+            .map_err(|e| StoreError::io(format!("denylist unreadable: {e}")))?;
+        let parsed: Value = serde_json::from_str(&raw).map_err(|e| {
+            StoreError::invalid_record(format!("denylist record does not parse: {e}"))
+        })?;
+        let terms: Vec<String> = parsed
+            .get("terms")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|t| t.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !terms.is_empty() {
+            for (rel, record) in store.read_family_records(project_id, "narrative")? {
+                let mut fields: Vec<(String, String)> = Vec::new();
+                if record.get("record_type").and_then(Value::as_str) == Some("meister_dialogue") {
+                    if let Some(lines) = record.get("lines").and_then(Value::as_array) {
+                        for (i, line) in lines.iter().enumerate() {
+                            if let Some(text) = line.get("text").and_then(Value::as_str) {
+                                fields.push((format!("lines[{i}].text"), text.to_string()));
+                            }
+                            if let Some(choices) = line.get("choices").and_then(Value::as_array) {
+                                for (j, choice) in choices.iter().enumerate() {
+                                    if let Some(label) = choice.get("label").and_then(Value::as_str)
+                                    {
+                                        fields.push((
+                                            format!("lines[{i}].choices[{j}].label"),
+                                            label.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if record.get("record_type").and_then(Value::as_str) == Some("meister_story_arc") {
+                    if let Some(beats) = record.get("beats").and_then(Value::as_array) {
+                        for (i, beat) in beats.iter().enumerate() {
+                            if let Some(title) = beat.get("title").and_then(Value::as_str) {
+                                fields.push((format!("beats[{i}].title"), title.to_string()));
+                            }
+                            if let Some(quests) = beat.get("quests").and_then(Value::as_array) {
+                                for (j, quest) in quests.iter().enumerate() {
+                                    if let Some(title) = quest.get("title").and_then(Value::as_str)
+                                    {
+                                        fields.push((
+                                            format!("beats[{i}].quests[{j}].title"),
+                                            title.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for (field, text) in &fields {
+                    let lowered = text.to_lowercase();
+                    for term in &terms {
+                        if lowered.contains(term.as_str()) {
+                            hits += 1;
+                            b.check(Claim {
+                                id: format!("sanitize:{rel}:{field}"),
+                                subject: rel.clone(),
+                                claim: "sanitization_hit: shipped text carries no denylisted term"
+                                    .to_string(),
+                                value: json!(term),
+                                source_artifact: "denylist.json".to_string(),
+                                source_sha256: None,
+                                verified: false,
+                                detail: format!(
+                                    "denylisted term {term:?} found at {field} of {rel}"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Differentiation over cast pairs.
+    let descriptors = |record: &Value| -> Vec<String> {
+        let identity = &record["identity"];
+        if let Some(list) = identity.get("descriptors").and_then(Value::as_array) {
+            return list
+                .iter()
+                .filter_map(|d| d.as_str().map(|d| d.to_lowercase()))
+                .collect();
+        }
+        let mut tokens: Vec<String> = Vec::new();
+        for key in ["display_name", "role"] {
+            if let Some(text) = identity.get(key).and_then(Value::as_str) {
+                for token in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+                    if !token.is_empty() {
+                        tokens.push(token.to_string());
+                    }
+                }
+            }
+        }
+        tokens.sort();
+        tokens.dedup();
+        tokens
+    };
+    let mut pairs: Vec<Value> = Vec::new();
+    for i in 0..cast.len() {
+        for j in (i + 1)..cast.len() {
+            let (a, b_rec) = (&cast[i], &cast[j]);
+            let a_id = a["character_id"].as_str().unwrap_or_default().to_string();
+            let b_id = b_rec["character_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let a_name = a["identity"]["display_name"]
+                .as_str()
+                .unwrap_or(&a_id)
+                .to_lowercase();
+            let b_name = b_rec["identity"]["display_name"]
+                .as_str()
+                .unwrap_or(&b_id)
+                .to_lowercase();
+            let collision = a_name == b_name;
+            if collision {
+                b.check(Claim {
+                    id: format!("differentiation:{a_id}:{b_id}"),
+                    subject: a_id.clone(),
+                    claim: "differentiation_collision: cast display names are distinct".to_string(),
+                    value: json!(a_name),
+                    source_artifact: format!("cast/{b_id}.json"),
+                    source_sha256: None,
+                    verified: false,
+                    detail: format!(
+                        "cast members {a_id} and {b_id} share the display name {a_name:?}"
+                    ),
+                });
+            }
+            let da = descriptors(a);
+            let db = descriptors(b_rec);
+            let set_a: std::collections::BTreeSet<&String> = da.iter().collect();
+            let set_b: std::collections::BTreeSet<&String> = db.iter().collect();
+            let shared = set_a.intersection(&set_b).count();
+            let union = set_a.union(&set_b).count();
+            let overlap = if union == 0 {
+                0.0
+            } else {
+                (shared as f64 / union as f64 * 1000.0).round() / 1000.0
+            };
+            pairs.push(json!({
+                "a": a_id,
+                "b": b_id,
+                "name_collision": collision,
+                "descriptor_overlap": overlap,
+            }));
+        }
+    }
+    Ok((hits, pairs))
 }
 
 /// One reference-resolution claim (STORE-03, `canon_orphan`).
@@ -3033,6 +3209,156 @@ fn descent_violation(message: String) -> StoreError {
 /// minigame systems (the plan's SYS-09 references).
 ///
 /// Returns the floor count.
+
+/// NAR-04: the level's narrative half. Trigger `dialogue`
+/// fields name authored dialogues; `layout.narrative` composes
+/// chambers with scene and dialogue records; `layout.encounters`
+/// places encounters in declared chambers against declared
+/// systems. Every reference resolves or the compose refuses.
+fn validate_level_narrative(
+    store: &Store,
+    project_id: &str,
+    layout: &Value,
+    triggers: &[Value],
+) -> StoreResult<()> {
+    let dialogue_ids: Vec<String> = store
+        .read_family_records(project_id, "narrative")?
+        .into_iter()
+        .filter(|(_, r)| r.get("record_type").and_then(Value::as_str) == Some("meister_dialogue"))
+        .filter_map(|(_, r)| {
+            r.get("dialogue_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let scene_ids: Vec<String> = store
+        .read_family_records(project_id, "scenes")?
+        .into_iter()
+        .filter_map(|(_, r)| {
+            r.get("scene_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let system_ids: Vec<String> = store
+        .read_system_records(project_id)?
+        .into_iter()
+        .filter_map(|(_, r)| {
+            r.get("system_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    // floor_id -> chamber ids, from the layout itself.
+    let mut chambers_of: Vec<(String, Vec<String>)> = Vec::new();
+    if let Some(floors) = layout.get("floors").and_then(Value::as_array) {
+        for floor in floors {
+            let floor_id = floor
+                .get("floor_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let chambers = floor
+                .get("chambers")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_string))
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+            chambers_of.push((floor_id, chambers));
+        }
+    }
+    let chamber_known = |floor_id: &str, chamber: &str| -> bool {
+        chambers_of
+            .iter()
+            .any(|(f, cs)| f == floor_id && cs.iter().any(|c| c == chamber))
+    };
+    for trigger in triggers {
+        if let Some(d) = trigger.get("dialogue").filter(|v| !v.is_null()) {
+            let d = d.as_str().ok_or_else(|| {
+                StoreError::invalid_record("trigger dialogue must be a dialogue id string")
+            })?;
+            if !dialogue_ids.iter().any(|i| i == d) {
+                return Err(StoreError::new(
+                    "graph_dangling_ref",
+                    format!("trigger names undeclared dialogue {d}"),
+                ));
+            }
+        }
+    }
+    if let Some(narrative) = layout.get("narrative").filter(|v| !v.is_null()) {
+        let entries = narrative.as_array().ok_or_else(|| {
+            StoreError::invalid_record("layout narrative must be an array of chamber compositions")
+        })?;
+        for entry in entries {
+            let floor_id = req_text(entry, "floor_id", MAX_ID_CHARS)?;
+            let chamber = req_text(entry, "chamber", MAX_ID_CHARS)?;
+            if !chamber_known(&floor_id, &chamber) {
+                return Err(StoreError::new(
+                    "descent_violation",
+                    format!(
+                        "narrative composition names chamber {chamber}                          of undeclared floor {floor_id}"
+                    ),
+                ));
+            }
+            if let Some(s) = entry.get("scene_id") {
+                let s = s.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("composition scene_id must be a string")
+                })?;
+                if !scene_ids.iter().any(|i| i == s) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("composition names undeclared scene {s}"),
+                    ));
+                }
+            }
+            if let Some(d) = entry.get("dialogue_id") {
+                let d = d.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("composition dialogue_id must be a string")
+                })?;
+                if !dialogue_ids.iter().any(|i| i == d) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("composition names undeclared dialogue {d}"),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(encounters) = layout.get("encounters").filter(|v| !v.is_null()) {
+        let encounters = encounters
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("layout encounters must be an array"))?;
+        for encounter in encounters {
+            let id = req_text(encounter, "id", MAX_ID_CHARS)?;
+            let floor_id = req_text(encounter, "floor_id", MAX_ID_CHARS)?;
+            let chamber = req_text(encounter, "chamber", MAX_ID_CHARS)?;
+            if !chamber_known(&floor_id, &chamber) {
+                return Err(StoreError::new(
+                    "descent_violation",
+                    format!(
+                        "encounter {id} placed in chamber {chamber}                          of undeclared floor {floor_id}"
+                    ),
+                ));
+            }
+            if let Some(s) = encounter.get("system_id") {
+                let s = s.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("encounter system_id must be a string")
+                })?;
+                if !system_ids.iter().any(|i| i == s) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("encounter {id} names undeclared system {s}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_descent_layout(
     layout: &Value,
     dag_ids: &BTreeSet<String>,
@@ -4628,14 +4954,113 @@ mod tests {
     }
 
     #[test]
-    fn adv_level_narrative_fields_wait_for_rung3() {
-        let (store, root, _source) = scaffolded("sys-descent-narrative");
+    fn level_with_narrative_composes() {
+        // NAR-04: dialogue at the camp (a chamber) and the
+        // stairs (a trigger), an encounter placed in a declared
+        // chamber — the narrative half is real at Rung 3.
+        let (store, root, source) = scaffolded("nar-compose");
+        store.add_cast(&cast_args(&source)).unwrap();
+        store
+            .author_dialogue(&json!({"envelope": envelope(), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "a", "speaker": "warden", "text": "Halt."}]}))
+            .unwrap();
         let mut layout = descent_layout();
-        layout["narrative"] = json!({"intro": "once upon a time"});
+        layout["narrative"] = json!([
+            {"floor_id": "floor-1", "chamber": "entry-hall",
+             "dialogue_id": "gate-words"}
+        ]);
+        layout["encounters"] = json!([
+            {"id": "e1", "floor_id": "floor-2", "chamber": "crypt"}
+        ]);
+        let mut args = level_args(layout);
+        args["triggers"] = json!([{"id": "t1", "dialogue": "gate-words"}]);
+        let body = store.compose_level(&args).unwrap();
+        assert_eq!(body["floor_count"], 3);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_level_undeclared_dialogue_link_is_refused() {
+        let (store, root, _source) = scaffolded("nar-compose-dangling");
+        let mut layout = descent_layout();
+        layout["narrative"] = json!([
+            {"floor_id": "floor-1", "chamber": "entry-hall",
+             "dialogue_id": "no-such-dialogue"}
+        ]);
         let err = store.compose_level(&level_args(layout)).unwrap_err();
-        assert_eq!(err.code, "not_implemented_until_rung3");
-        // The refusal wrote nothing.
-        assert!(!root.join("first-light/levels/the-descent.json").exists());
+        assert_eq!(err.code, "graph_dangling_ref");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_level_encounter_in_undeclared_room_is_refused() {
+        let (store, root, _source) = scaffolded("nar-compose-room");
+        let mut layout = descent_layout();
+        layout["encounters"] = json!([
+            {"id": "e1", "floor_id": "floor-1", "chamber": "nowhere"}
+        ]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn census_sanitization_hit_locates_the_field() {
+        let (store, root) = nar_store("san1");
+        store
+            .author_dialogue(&json!({"envelope": envelope(), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "a", "speaker": "warden",
+                           "text": "The Qompass gate stands."}]}))
+            .unwrap();
+        fs::write(
+            root.join("first-light/denylist.json"),
+            "{\"terms\": [\"qompass\"]}",
+        )
+        .unwrap();
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        assert_eq!(err.code, "canon_unverified");
+        let body = err.census.expect("census body rides the refusal");
+        assert_eq!(body["counts"]["sanitization_hits"], 1);
+        assert!(
+            body["failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap().contains("lines[0].text")),
+            "the hit locates its field: {body}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn census_differentiation_collision_and_overlap_report() {
+        let (store, root, source) = scaffolded("nar-diff");
+        store.add_cast(&cast_args(&source)).unwrap();
+        // A second member with the same display name.
+        let mut twin = cast_args(&source);
+        twin["character_id"] = json!("warden-twin");
+        twin["envelope"]["record_id"] = json!("rec-cast-twin");
+        store.add_cast(&twin).unwrap();
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("census body rides the refusal");
+        assert!(
+            body["failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap().contains("differentiation:warden:warden-twin")),
+            "the collision is a named failure: {body}"
+        );
+        let pairs = body["differentiation"].as_array().unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0]["name_collision"], true);
+        assert_eq!(pairs[0]["descriptor_overlap"], 1.0);
         let _ = fs::remove_dir_all(&root);
     }
 
