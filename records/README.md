@@ -66,3 +66,13 @@ inputs), `meister_asset_route` (optional `mode` input),
 `meister_project_inspect` (the `genesis` output). The
 asset handlers themselves landed at this rung against
 schemas born at Rung 0.
+
+## rung5/
+
+Birth records for schemas born at Rung 5 that are not tool
+schemas, same envelope. `meister-pack-1.json` (PK-01) is the
+birth of the pack format `meister-pack/1`: its `produced`
+entries pin the defining source (`src/pack.rs`) and the format
+document (`packs/README.md`) by SHA-256. No tool's served
+definition changed at PK-01 (packs add no tools; the catalog
+invariant test pins this), so no promotion record is written.
