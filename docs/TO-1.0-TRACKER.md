@@ -28,12 +28,12 @@ its rows as work moves.
 
 | ID | Task | Lane | Status | Notes |
 |---|---|---|---|---|
-| P0-1 | `two_model` rename `adult` -> `grown` (schemas, records, adopted canon store; branch; full gates + census) | PAX | TODO | Owner ruling D12, 2026-11-17. Landing returns for per-push confirmation. |
-| P0-2 | Floor 12 real verdict append (Niflheim proof store, after the NIGHT-FIXTURE entry; census stays 0 unverified) | PAX | TODO | Owner adopted Floor 12 as canon 2026-11-17. |
-| P0-3 | EFLO waiver into COMPLIANCE S3 (2,926 vs 2,500 tokens, GATE-4 measurement) | PAX | TODO | With the Rung 5 amendment pass. |
-| P0-4 | PATH-TO-1.0 amendment: SYS-11 recommended-prerequisite edges + chamber->scene refs as Rung 5 tasks; V1-01 title recorded (P0-5) | PAX | TODO | Owner rulings 2026-11-17 06:54. |
+| P0-1 | `two_model` rename `adult` -> `grown` (schemas, records, adopted canon store; branch; full gates + census) | PAX | DONE-PENDING-GATE | Owner ruling D12, 2026-11-17. Executed on branch `pax/phase0-rulings-20261117` (gates 213/0, clippy/fmt rc=0); landing returns for per-push confirmation. |
+| P0-2 | Floor 12 real verdict append (Niflheim proof store, after the NIGHT-FIXTURE entry; census stays 0 unverified) | PAX | DONE | Owner adopted Floor 12 as canon 2026-11-17. Appended 2026-11-17 as pack `pack-emt04-owner`, seq 2, ruling adopt, 7 subjects; the fixture record is untouched; canon census re-run under the 0.5.0 binary: 55 checks, all verified, pass. |
+| P0-3 | EFLO waiver into COMPLIANCE S3 (2,926 vs 2,500 tokens, GATE-4 measurement) | PAX | DONE-PENDING-GATE | Recorded in COMPLIANCE S3 on branch `pax/phase0-rulings-20261117`; lands with that branch. |
+| P0-4 | PATH-TO-1.0 amendment: SYS-11 recommended-prerequisite edges + chamber->scene refs as Rung 5 tasks; V1-01 title recorded (P0-5) | PAX | DONE-PENDING-GATE | SYS-11a/SYS-11b added as Rung 5 tasks and the V1-01 title recorded in PATH-TO-1.0, on branch `pax/phase0-rulings-20261117`; lands with that branch. |
 | P0-5 | V1-01 title of record: **Time Waits: Gear Game** (platformer) | OWNER | DONE | Named by Matt 2026-11-17 08:52 PST. |
-| P0-6 | Reinstall Meister from merged main `0117079` on primo; probe installed binary version (D-1543) | PAX | TODO | Installed binary predates the 2026-11-17 merge. |
+| P0-6 | Reinstall Meister from merged main `0117079` on primo; probe installed binary version (D-1543) | PAX | DONE | Reinstalled 2026-11-17 from merged main `0117079`; the replaced binary was v0.2.0; the installed binary's own discover response reports meister 0.5.0 (D-1543 probe). |
 
 ## Rung 5 — The flagship pack: Role Playing x Educational
 
