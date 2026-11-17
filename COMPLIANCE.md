@@ -108,6 +108,35 @@ cannot drift from the measurement. The waiver text above is the
 Rung 0–1 record and has not been rewritten against the
 per-profile measurement; that rewrite is the Rung 2 gate's.
 
+Rung 3 re-measurement (EFLO.md regenerated on the Rung 3
+tree): every base profile is within budget — core 815,
+canon 1,636, systems 1,567, narrative 2,166 (the two new
+tools included), assets 1,432, qa 1,842, release 1,760.
+The `niflheim-floor` bundle measures 2,918, **over by
+418**, because the bundle now carries freeze and emit
+through `narrative`; at Rung 2 it stood at 2,436. A
+waiver for the bundle is requested and stands as an Owner
+decision (filed in the night DECISIONS.md): the bundle's
+purpose is the end-to-end floor workflow, whose later
+stages (freeze, emit) are exactly the tools that crossed
+it, and no base profile is over. `full` measures 6,328
+(audit-only; the §3 waiver covers it). The count of tools
+is 33 since Rung 3 (31 at birth).
+
+Rung 3 status: Groups 4–5 are real (dialogue, reactions,
+story arcs, level narrative composition, deterministic
+playtest), and the freeze/emit pair is real
+(`meister_verdict_record`, `meister_emit`) — 18 of 33
+tools live; the remaining 15 are the typed seams of
+Groups 6–10. Placement note: the plan text named group 8
+for the verdict tool and the narrative profile for both
+new tools; the repo's own plan of record (the catalog's
+profile declarations and group law, Rung 0) fixes
+placement, so `meister_verdict_record` is group 8 in the
+`narrative` profile under a named exception in the group
+law (the same device `meister_level_compose` uses), and
+`meister_emit` is group 5.
+
 Surface profiles (EFLO-02). The catalog declares the profiles
 the surface is served in (`PROFILES` in `src/catalog.rs`); each
 tool also names the base profiles that carry it, and a catalog
@@ -124,12 +153,13 @@ to start on a declaration that fails it. Every profile serves
 - `systems` (8): core + Group 3 (`meister_scene_define`,
   `meister_system_define`, `meister_scene_validate`) +
   `meister_level_compose`.
-- `narrative` (9): core + Groups 4–5 except
+- `narrative` (11): core + Groups 4–5 except
   `meister_level_compose` (`meister_dialogue_author`,
   `meister_dialogue_get`, `meister_reaction_set`,
-  `meister_story_define`, `meister_playtest_generate`). The
-  Rung 3 freeze and emit tools join this profile when they
-  exist; they are not declared before then.
+  `meister_story_define`, `meister_playtest_generate`), plus
+  the Rung 3 freeze and emit tools, which joined this profile
+  when they landed (`meister_verdict_record`,
+  `meister_emit`).
 - `assets` (7): core + Group 7 (`meister_asset_intake`,
   `meister_asset_route`, `meister_asset_chain_get`).
 - `qa` (10): core + Groups 6 and 8 (`meister_rating_record`,
@@ -141,9 +171,9 @@ to start on a declaration that fails it. Every profile serves
   `meister_account_register`, `meister_account_inspect`,
   `meister_account_verify`). Never in a bundle: it is
   credential-adjacent and stays opt-in.
-- `niflheim-floor` (bundle, 13): core ∪ `systems` ∪
+- `niflheim-floor` (bundle, 15): core ∪ `systems` ∪
   `narrative`.
-- `full` (31): every tool. For conformance and audit only.
+- `full` (33): every tool. For conformance and audit only.
 
 Profile selection (EFLO-03). One profile is served per launch,
 chosen by `MEISTER_PROFILE` (§7); unset selects `core`.
@@ -260,6 +290,56 @@ successor evidence for the scene tools; the records law keys
 successors to definition changes, so none is owed — the
 disagreement is recorded here rather than resolved by
 inventing records the law does not call for.
+
+NAR-01..03 add `speaker_unknown` (a dialogue line or
+reaction names no cast member), `identity_unlocked` (a
+reaction targets a character with no identity lock,
+D-1410), and `unlock_undeclared` (a record's unlock list
+names an undeclared flag). NAR-04 retires
+`not_implemented_until_rung3`: level narrative fields are
+now a composition, refused as `descent_violation` for
+undeclared floors/chambers and `graph_dangling_ref` for
+undeclared scenes, dialogues, and systems. NAR-05 adds
+two census claim families, no new error code:
+`sanitization_hit` (a project's out-of-band `denylist.json`
+term found in dialogue or story text — a claim, never a
+silent edit; no tool authors the denylist, which is a
+scoping limit of this rung) and `differentiation_collision`
+(two cast members sharing a display name), with the census
+counts gaining `sanitization_hits` and a top-level
+`differentiation` array carrying descriptor-overlap scores.
+NAR-06 adds `playtest_bound_exceeded` (a graph over the
+node bound, refused before traversal; the traversal's own
+bounds report in the body as `bound_hit` with the coverage
+gathered).
+
+FRZ-01 adds `verdict_hash_mismatch` (a subject's current
+canonical hash differs from the pack's pin) and
+`subject_unknown` (a subject names no record in the
+project). FRZ-02 adds `frozen_record`: a record whose
+latest verdict ruling is `adopt` refuses every edit path —
+define paths answer it instead of `conflict`, the cast
+lock directly — until a later verdict thaws it; the
+verdict records are the custody chain. FRZ-03: the census
+counts gain `unit_states` (ungated / gated / sealed,
+sealed derived from standing adoptions; a successful
+playtest marks its unit gated with the run id). FRZ-04:
+`meister_project_inspect` reports a derived `lifecycle`
+(scaffolded / authoring / frozen_slice / emitted), never
+a stored field.
+
+EMT-01 adds `subject_empty` (an emit with no subjects),
+`subject_unfrozen` (a subject does not stand adopted),
+`emitter_unknown`, `emit_path_refused` (no emit root
+configured, `..` traversal, an absolute target outside
+the root, or a target escaping the root through a
+symlink), and `emit_conflict` (a target holding files
+Meister did not write for this emitter and subject set).
+One sharp edge, recorded from the EMT-04 gate: building
+an emitted shell in place leaves `Cargo.lock` and
+`target/` in the emit directory, which are foreign to
+the manifest, so a re-emit into that directory is
+refused until they are removed.
 
 ## 6. Resources, prompts, other surfaces
 
@@ -526,3 +606,61 @@ under the night authorization that built it.
   the hand build stands. No new floor's canon records were
   authored into the adopted store tonight; Floor 12's
   records live in the throwaway proof store.
+
+### GATE-3 evidence (Rung 3, 2026-11-17)
+
+Recorded on branch `pax/rung3-narrative-freeze-emit-20261116`
+at the GATE-3 commit; the branch is unmerged and unpublished
+under the night authorization that built it.
+
+- Standing gates on the final tree: full suite **200 passed,
+  0 failed** (158 unit + 23 conformance + 7 eflo_measure + 1
+  malformed + 7 manifest_agreement + 4 store_lock); clippy
+  `--all-targets -D warnings` clean (exit code verified);
+  `cargo fmt --check` clean.
+- Theodolite (cured copy route; gate copy hash-verified
+  against the worktree): store.rs, server.rs, catalog.rs at
+  0 severity-1 errors, planted E0308 control seen, witness
+  restored sha-identical. Verdict: PASS. Record:
+  `theodolite-record-rung3.json` in the night gate
+  directory.
+- EFLO re-measured on the final tree (EFLO.md): narrative
+  2,166 within budget; niflheim-floor 2,918, over by 418 —
+  the waiver request and its reasoning are in §3; full
+  6,328 (audit-only).
+- GATE-3.1 (NAR-06): the slice and its twin are unit
+  tests — the slice reaches both endings (2 playthroughs),
+  the twin reports exactly the orphaned ending by id; a
+  cyclic dialogue terminates (2 playthroughs); two runs
+  are byte-identical; a 513-node hand-written graph is
+  refused `playtest_bound_exceeded` before traversal.
+- GATE-3.2 (FRZ-02): the freeze/thaw/edit cycle is a unit
+  test — adopt freezes (define answers `frozen_record`,
+  the cast lock answers `frozen_record`), a later
+  send_back thaws (define answers its normal `conflict`);
+  stale-pack and unknown-subject refusals are adversarial
+  tests beside it.
+- GATE-3.3 (EMT-01/02/04): emit refusals, the golden
+  module, the shell shape, and byte-identical double emit
+  are unit tests. EMT-04 ran on primo against the SYS-11
+  Floor 12 store copy: 7 records frozen under a fixture
+  verdict (decision_ref `NIGHT-FIXTURE` — not an Owner
+  ruling; the adoption itself is an Owner decision, filed
+  in the night DECISIONS.md), emitted both ways, and both
+  outputs compiled — the content modules in a scratch
+  crate, the shell in place on the pinned nightly, zero
+  warnings after the dead-code cure. The driver's
+  independently computed canonical hashes matched the
+  server's for all 7 subjects. Evidence:
+  `emt04/` in the night gate directory (driver,
+  transcript, FINDINGS.md).
+- Records: two tools were born at this rung; their birth
+  records are in `records/birth/` (verdict_record sha256
+  2759dc98…, emit sha256 1156fb14…). No earlier tool's
+  served definition changed, so no successor records are
+  owed; `records/README.md` carries the rung3 note.
+- Client tolerance: the estate conformance suite passes
+  (23 wire tests, including the 33-tool surface and the
+  per-profile served sets). Inspector / rose / phlow: as
+  recorded at GATE-2 (era gap / not run / not run) — not
+  re-run at this gate.

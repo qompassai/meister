@@ -46,3 +46,12 @@ records follow bloch's envelope shape and field discipline with
 Meister's own lane vocabulary, as the plan of record rules. If
 they are ever fed to bloch intake, that mapping is the one
 translation required, and it belongs to the intake side.
+
+## rung3/
+
+No promotion records: no Rung 0–2 tool's served definition
+changed at Rung 3 (handlers landed; schemas were born
+complete). The rung's two new tools were born at Rung 3 and
+their birth records live in `birth/` with the rest:
+`meister_verdict_record` (group 8) and `meister_emit`
+(group 5).
