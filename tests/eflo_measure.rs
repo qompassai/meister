@@ -39,19 +39,28 @@ fn fresh_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// Run the script in isolated mode against `binary`, writing `out`.
+/// Run the script in isolated mode against `binary`, writing `out`,
+/// with `MEISTER_PROFILE` unset: the default surface.
 fn measure(binary: &Path, out: &Path) -> Output {
+    measure_profiles(binary, out, &[])
+}
+
+/// As `measure`, with one `--profile` per name.
+fn measure_profiles(binary: &Path, out: &Path, profiles: &[&str]) -> Output {
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/eflo_measure.py");
-    Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg("-I")
         .arg(&script)
         .arg("--binary")
         .arg(binary)
         .arg("--out")
         .arg(out)
-        .env_remove("MEISTER_PROFILE")
-        .output()
-        .expect("python3 runs")
+        .env_remove("MEISTER_PROFILE");
+    for profile in profiles {
+        command.arg("--profile").arg(profile);
+    }
+    command.output().expect("python3 runs")
 }
 
 fn stderr_of(output: &Output) -> String {
@@ -139,7 +148,66 @@ fn report_counts_the_served_surface_per_profile_and_per_tool() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn each_named_profile_is_measured_in_its_own_session() {
+    let _guard = serial();
+    let dir = fresh_dir("profiles");
+    let out = dir.join("EFLO.md");
+    let bin = Path::new(env!("CARGO_BIN_EXE_meister"));
+    let run = measure_profiles(bin, &out, &["core", "full"]);
+    assert!(run.status.success(), "measure failed: {}", stderr_of(&run));
+    let report = std::fs::read_to_string(&out).unwrap();
+    // Two profile rows, in the order asked; the first is core.
+    let rows: Vec<&str> = report
+        .lines()
+        .skip_while(|line| !line.starts_with("| Profile |"))
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .collect();
+    assert_eq!(rows.len(), 2, "rows: {rows:?}");
+    assert!(rows[0].starts_with("| `core` | 4 |"), "row: {}", rows[0]);
+    assert!(rows[1].starts_with("| `full` | 31 |"), "row: {}", rows[1]);
+    // The script selects the profile itself: a caller's own
+    // MEISTER_PROFILE does not leak into a named session.
+    let leaked = dir.join("leaked.md");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/eflo_measure.py");
+    let run = Command::new("python3")
+        .arg("-I")
+        .arg(&script)
+        .arg("--binary")
+        .arg(bin)
+        .arg("--out")
+        .arg(&leaked)
+        .args(["--profile", "core", "--profile", "full"])
+        .env("MEISTER_PROFILE", "release")
+        .output()
+        .expect("python3 runs");
+    assert!(run.status.success(), "measure failed: {}", stderr_of(&run));
+    assert_eq!(
+        std::fs::read(&leaked).unwrap(),
+        std::fs::read(&out).unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------- adversarial ----------
+
+#[test]
+fn adv_an_undeclared_profile_is_an_error_not_a_measurement() {
+    let _guard = serial();
+    let dir = fresh_dir("undeclared");
+    let out = dir.join("EFLO.md");
+    let bin = Path::new(env!("CARGO_BIN_EXE_meister"));
+    // The server refuses to start; nothing is measured, and the
+    // declared profile asked alongside it is not written either.
+    let run = measure_profiles(bin, &out, &["core", "nope"]);
+    assert_eq!(run.status.code(), Some(1));
+    let stderr = stderr_of(&run);
+    assert!(stderr.contains("profile nope"), "stderr: {stderr}");
+    assert!(stderr.contains("unknown_profile"), "stderr: {stderr}");
+    assert!(!out.exists(), "a failed measurement wrote a report");
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 #[test]
 fn adv_malformed_json_is_an_error_not_zero_tokens() {

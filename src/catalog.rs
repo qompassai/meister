@@ -306,6 +306,59 @@ pub const PROFILES: &[Profile] = &[
     },
 ];
 
+/// The environment variable that selects the served profile at
+/// launch (COMPLIANCE.md §7).
+pub const ENV_PROFILE: &str = "MEISTER_PROFILE";
+
+/// The profile served when `MEISTER_PROFILE` is unset.
+pub const DEFAULT_PROFILE: &str = PROFILE_CORE;
+
+impl Profile {
+    /// True when this profile serves `spec`. Every profile serves
+    /// the core tools; `full` serves everything.
+    pub fn serves(&self, spec: &ToolSpec) -> bool {
+        let carried_by = |base: &&str| spec.profiles.contains(base);
+        match self.kind {
+            ProfileKind::Full => true,
+            ProfileKind::Base { .. } => carried_by(&PROFILE_CORE) || carried_by(&self.name),
+            ProfileKind::Bundle { members } => {
+                carried_by(&PROFILE_CORE) || members.iter().any(carried_by)
+            }
+        }
+    }
+}
+
+/// Look up one declared profile by name. Exact match only.
+pub fn profile_named(name: &str) -> Option<&'static Profile> {
+    PROFILES.iter().find(|profile| profile.name == name)
+}
+
+/// Resolve the launch profile from the raw `MEISTER_PROFILE` value:
+/// unset selects the default; a set value must name a declared
+/// profile exactly. Anything else — empty, mis-cased, padded, a
+/// list, not UTF-8 — is an error carrying the value as given; the
+/// caller refuses to start. There is no fallback.
+pub fn select_profile(raw: Option<&std::ffi::OsStr>) -> Result<&'static Profile, String> {
+    let Some(raw) = raw else {
+        return Ok(profile_named(DEFAULT_PROFILE).expect("the default profile is declared"));
+    };
+    raw.to_str()
+        .and_then(profile_named)
+        .ok_or_else(|| raw.to_string_lossy().into_owned())
+}
+
+/// The profiles a client can launch to reach `spec`, in declared
+/// order. `full` is left out: it carries every tool by definition
+/// and is for conformance and audit only, so it is never the
+/// answer to "where does this tool live".
+pub fn carrying_profiles(spec: &ToolSpec) -> Vec<&'static str> {
+    PROFILES
+        .iter()
+        .filter(|profile| !matches!(profile.kind, ProfileKind::Full) && profile.serves(spec))
+        .map(|profile| profile.name)
+        .collect()
+}
+
 /// A profile declaration the catalog refuses to serve under.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProfileError {
@@ -1097,10 +1150,12 @@ pub fn specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// The served tool definitions, built from the catalog.
-pub fn tool_definitions() -> Vec<Tool> {
+/// The tool definitions served under `profile`, built from the
+/// catalog, in catalog order.
+pub fn tool_definitions(profile: &Profile) -> Vec<Tool> {
     specs()
         .into_iter()
+        .filter(|spec| profile.serves(spec))
         .map(|spec| {
             let Value::Object(input_map) = spec.input else {
                 unreachable!("catalog input schemas are objects");
@@ -1305,6 +1360,53 @@ mod tests {
         }
     }
 
+    // ---------- profile selection (EFLO-03): validation ----------
+
+    #[test]
+    fn each_profile_serves_exactly_its_declared_set() {
+        // The serving path reads the tools' own `profiles`; the
+        // oracle reads `PROFILES`. They must agree for every profile.
+        for profile in PROFILES {
+            let served: BTreeSet<&str> = specs()
+                .iter()
+                .filter(|spec| profile.serves(spec))
+                .map(|spec| spec.name)
+                .collect();
+            assert_eq!(served, declared_set(profile.name), "{}", profile.name);
+            let listed: BTreeSet<String> = tool_definitions(profile)
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            let declared: BTreeSet<String> = declared_set(profile.name)
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect();
+            assert_eq!(listed, declared, "{}", profile.name);
+        }
+    }
+
+    #[test]
+    fn selection_defaults_to_core_and_takes_every_declared_name() {
+        assert_eq!(select_profile(None).unwrap().name, "core");
+        for profile in PROFILES {
+            let raw = std::ffi::OsString::from(profile.name);
+            assert_eq!(select_profile(Some(&raw)).unwrap().name, profile.name);
+        }
+    }
+
+    #[test]
+    fn carrying_profiles_name_where_a_tool_lives() {
+        let carriers = |name: &str| carrying_profiles(&spec_named(name).unwrap());
+        assert_eq!(
+            carriers("meister_scene_define"),
+            ["systems", "niflheim-floor"]
+        );
+        assert_eq!(carriers("meister_cast_lock"), ["canon"]);
+        assert_eq!(carriers("meister_account_verify"), ["release"]);
+        // A core tool lives in every launchable profile.
+        assert_eq!(carriers("meister_lane_check").len(), PROFILES.len() - 1);
+    }
+
     // ---------- profiles (EFLO-02): adversarial ----------
 
     mod adversarial {
@@ -1415,6 +1517,44 @@ mod tests {
                         profile: bad.into()
                     })
                 );
+            }
+        }
+
+        #[test]
+        fn selection_refuses_anything_but_an_exact_declared_name() {
+            for bad in [
+                "",
+                "nope",
+                "Core",
+                "CORE",
+                " core",
+                "core ",
+                "core,canon",
+                "core\n",
+            ] {
+                let raw = std::ffi::OsString::from(bad);
+                assert_eq!(
+                    select_profile(Some(&raw)).map(|p| p.name),
+                    Err(bad.to_string()),
+                    "{bad:?} must not select a profile"
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn selection_refuses_a_non_utf8_value() {
+            use std::os::unix::ffi::OsStrExt;
+            let raw = std::ffi::OsStr::from_bytes(b"core\xff");
+            assert!(select_profile(Some(raw)).is_err());
+        }
+
+        #[test]
+        fn no_launchable_profile_but_release_carries_a_release_tool() {
+            for spec in specs() {
+                if spec.group == 9 || spec.group == 10 {
+                    assert_eq!(carrying_profiles(&spec), ["release"], "{}", spec.name);
+                }
             }
         }
 

@@ -132,6 +132,22 @@ to start on a declaration that fails it. Every profile serves
   `narrative`.
 - `full` (31): every tool. For conformance and audit only.
 
+Profile selection (EFLO-03). One profile is served per launch,
+chosen by `MEISTER_PROFILE` (§7); unset selects `core`.
+`tools/list` carries only the selected profile's tools. A
+`tools/call` to a catalog tool outside the profile is an
+`isError` result with code `group_not_loaded`, naming the tool,
+the active profile, and the profiles that carry the tool (every
+carrier except `full`, which is audit-only) — it is never
+answered as an unknown tool. The lane gate runs BEFORE the
+profile check (§4): an out-of-profile record-carrying call with
+a refused envelope gets the lane code, and is never told where
+the tool lives. `group_not_loaded` is pre-mutation: it returns
+before the store is resolved. A profile grants no authority —
+it decides what can load; the lane gate and the handlers decide
+what is permitted. The conformance suite launches every
+declared profile and pins its served set.
+
 ## 4. Lane law enforcement
 
 The gate is live from this commit (`src/lane.rs`). Every
@@ -160,7 +176,8 @@ eye/ear are the verdict (D-713/D-221).
 ## 5. Errors
 
 Execution failures are tool results (`isError` + structured
-JSON: lane refusals, `not_implemented` seams, `unknown_tool`);
+JSON: lane refusals, `not_implemented` seams, `group_not_loaded`
+for a catalog tool outside the launched profile, `unknown_tool`);
 protocol errors are reserved for protocol faults (era refusal,
 unknown method, malformed JSON, oversized line). A client can
 therefore always distinguish "the server refused this work" from
@@ -191,8 +208,20 @@ credential REFERENCES and status by schema design (a
 takes no CLI arguments. Since Rung 1 the server holds a record
 store on disk: the root is `MEISTER_PROJECTS_ROOT` when set,
 else `$XDG_DATA_HOME/meister/projects`, else
-`$HOME/.local/share/meister/projects` — the only environment
-the server reads. Writes are confined to that root: record ids
+`$HOME/.local/share/meister/projects`. The server reads exactly
+two environment inputs: that store root, and `MEISTER_PROFILE`,
+the surface profile served for the life of the process (§3).
+The `MEISTER_PROFILE` contract: unset selects `core`; a set
+value must be the exact name of a declared profile (`core`,
+`canon`, `systems`, `narrative`, `assets`, `qa`, `release`,
+`niflheim-floor`, `full`). Any other value — empty, mis-cased,
+padded, a list, not UTF-8 — makes the server refuse to start:
+exit status 2, nothing written to stdout, and one typed line on
+stderr (`meister: refusing to start: unknown_profile: …`)
+naming the declared profiles. There is no fallback to the
+default. The profile narrows the served surface only; it is not
+a permission and reads no secret. Writes are confined to the
+store root: record ids
 are validated slugs (no path traversal), records are written
 atomically (temp + rename) only after full validation, and all
 reads are bounded (1 MiB per record, 32 MiB per census source).
