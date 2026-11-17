@@ -123,6 +123,13 @@ it, and no base profile is over. `full` measures 6,328
 (audit-only; the §3 waiver covers it). The count of tools
 is 33 since Rung 3 (31 at birth).
 
+Waiver recorded (Owner, 2026-11-17): the `niflheim-floor` bundle
+waiver is GRANTED. At the GATE-4 measurement the bundle stood at
+2,926 tokens against the 2,500 budget (over by 426); the bundle
+stays one launch. This record supersedes the Rung 3 request above
+and the Rung 0–1 waiver it carried forward; the per-profile
+numbers remain EFLO.md's, not this file's.
+
 Rung 4 status: Group 7 is real (asset intake with
 byte-verified provenance, keeper-chain judgment, and
 routing to the specialist servers), and the genesis

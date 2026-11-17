@@ -109,7 +109,7 @@ the source of the facts below.
     only.
 - **Group 2**: Light Show's canon model, encoded.
   - `model_scheme` is `two_model` (exactly one canonical `base` form and
-    one canonical `adult` form) or `single_model` (exactly one canonical
+    one canonical `grown` form) or `single_model` (exactly one canonical
     form).
   - Forms are tied to governing references.
   - A non-canonical form needs a quarantine record with a reason and a
@@ -334,7 +334,7 @@ Each later task that depends on one of these names it as `A#`.
 | A13 | `envelope.record_id` is neither bound nor checked for uniqueness | STORE-03 adds per-project uniqueness |
 | A14 | *Resolved: R1-05 is recorded as passed.* | **No Rung 2 task starts on an open Rung 1.** If R1-05 fails, Rung 2 waits. |
 | A15 | D-1658 and D-1659 can be transcribed into validator rules | Any rule that is an eye-judgement stays a verdict-pack item, not a validator |
-| A16 | The `two_model` form kinds are named `base`/`adult` (age forms, from Light Show) | Decision D12; a rename is a Rung 1 lane change |
+| A16 | The `two_model` form kinds are named `base`/`grown` (age forms, from Light Show; renamed from `adult` under D12) | Decision D12 (decided 2026-11-17: rename, executed in the Phase 0 pass) |
 
 ---
 
@@ -1133,6 +1133,23 @@ rulings.
   RPG-specific fields. This is the guard against the mechanism being
   Niflheim-shaped.
 
+#### SYS-11a — Recommended-prerequisite edges (Rung 5 amendment)
+- **Build:** `progression_dag` gains recommended-prerequisite edges
+  beside the hard prerequisites SYS-11 shipped with: a recommended
+  edge advises, never blocks, and emit surfaces it as guidance.
+- **Done when:** a SYS-11-shaped record set with recommended edges
+  validates and emits, and a hard-edge-only set is byte-identical to
+  its pre-amendment emit. (Owner ruling 2026-11-17.)
+
+#### SYS-11b — Chamber-to-scene references at compose (Rung 5 amendment)
+- **Build:** level/chamber records may reference scene records by
+  id; composition checks that every reference resolves inside the
+  project and refuses a dangling reference with the records named.
+- **Done when:** a dangling chamber-to-scene reference is refused
+  at compose with the referencing and missing records both named,
+  and the Floor 12 record set composes unchanged. (Owner ruling
+  2026-11-17.)
+
 #### NIF-02 — Worked example: one Niflheim floor, end to end (primo only) [NIF]
 - **Build:** the floor chosen under D2, produced entirely through
   Meister:
@@ -1426,7 +1443,7 @@ secret is ever present in any Meister state or output.
   - The README's own suggestion is a jam entry through a pack.
 - **Done when:** every stage has its conformance record and the Owner
   gates the title.
-- The **Owner names the title** (decision D10).
+- The **Owner names the title** (decision D10). Named 2026-11-17: **Time Waits: Gear Game**, a platformer, riding the Platformer pack (PK-7a).
 
 #### V1-02 — The worked-example audit
 - **Build:** a table of all 13 packs, each linked to its worked
@@ -1480,7 +1497,7 @@ None is decided here.
 | D9 | Narrative/VN pack worked example | (a) the Owner names a title; (b) the pack waits | (b) unless a title is named |
 | D10 | The 1.0 bar, and the titles for V1-01 and GATE-8 | (a) as written, 13 Owner-gated examples; (b) 1.0 covers the packs that have examples, the rest ship as 0.x previews | (a); light-show for GATE-8 |
 | D11 | The Kotlin companion (no rung owned it) | (a) Rung 8 with slipway; (b) Rung 7 with the TUI; (c) after 1.0 | (a) |
-| D12 | `two_model` form kind `adult` (Light Show's age form) | (a) keep; (b) rename (e.g. `grown`) so no reader or lane heuristic confuses an SFW record with the other lane | Owner's call; this is a Rung 1 lane change |
+| D12 | `two_model` form kind `adult` (Light Show's age form) | (a) keep; (b) rename (e.g. `grown`) so no reader or lane heuristic confuses an SFW record with the other lane | DECIDED 2026-11-17: (b) rename to `grown`, executed in the Phase 0 pass |
 
 ---
 

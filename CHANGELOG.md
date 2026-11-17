@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `two_model` form kind renamed `adult` -> `grown` (decision D12,
+  Owner-ruled 2026-11-17). No stored-record migration: no live
+  store carries the kind. PATH-TO-1.0 amended in the same pass
+  (SYS-11a/b Rung 5 tasks; V1-01 title of record: Time Waits:
+  Gear Game) and the COMPLIANCE S3 `niflheim-floor` EFLO waiver
+  recorded as granted.
+
 ## 0.5.0 — 2026-11-17
 
 - Rung 4 — asset routing and media (branch

@@ -32,7 +32,7 @@
 //! (Light Show's canon practice, encoded): one identity record
 //! per character with its governing references named inside the
 //! record; a `two_model` character carries exactly one canonical
-//! base form and one canonical adult form, and every further
+//! base form and one canonical grown form, and every further
 //! design is quarantined or superseded with a reason and a ruling
 //! reference; media enters through a keeper chain whose entries
 //! are born `candidate` and are `admitted` only with a recorded
@@ -3365,10 +3365,10 @@ fn validate_forms(
         "two_model" => {
             let mut kinds = canonical_kinds.clone();
             kinds.sort();
-            if kinds != ["adult", "base"] {
+            if kinds != ["base", "grown"] {
                 return Err(StoreError::invalid_record(
                     "two_model governance: exactly one canonical base form and one \
-                     canonical adult form; every further design is quarantined",
+                     canonical grown form; every further design is quarantined",
                 ));
             }
         }
@@ -6914,16 +6914,16 @@ mod tests {
     }
 
     #[test]
-    fn two_model_with_two_canonical_adults_is_refused() {
-        let (store, root, source) = scaffolded("two-adults");
+    fn two_model_with_two_canonical_grown_forms_is_refused() {
+        let (store, root, source) = scaffolded("two-growns");
         let mut id = identity(&source);
         id["model_scheme"] = json!("two_model");
         id["forms"] = json!([
             {"form_id": "base", "kind": "base", "design_id": "d-base",
              "canon_status": "canonical", "governing_reference_id": "sheet"},
-            {"form_id": "adult-a", "kind": "adult", "design_id": "d-a",
+            {"form_id": "grown-a", "kind": "grown", "design_id": "d-a",
              "canon_status": "canonical", "governing_reference_id": "sheet"},
-            {"form_id": "adult-b", "kind": "adult", "design_id": "d-b",
+            {"form_id": "grown-b", "kind": "grown", "design_id": "d-b",
              "canon_status": "canonical", "governing_reference_id": "sheet"}
         ]);
         let err = store
