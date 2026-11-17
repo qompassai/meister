@@ -43,13 +43,15 @@ identity records with the estate's canon governance and
 identity locks (D-1410); game-systems records of six kinds
 (schedule, flags, progression DAG, economy, state machine,
 minigame), each validated per kind at define time (SYS-02..07,
-Rung 2); and the canon census, graduated
+Rung 2); scene graph records with a structural validator
+(SYS-08); and level records composed under the descent law
+(SYS-09); and the canon census, graduated
 server-side from the lumen pipes' census — every census claim
 recomputed from its source artifact and SHA-256 (D-713), the
 census failing closed on any unverified claim. Since STORE-02
 (Rung 2) the census also reports a `state_hash` over the
 canonical record state and a `stale` flag (§5). The remaining
-23 tools are typed seams — each returns a structured
+20 tools are typed seams — each returns a structured
 `not_implemented` tool error naming the tool, its group, and
 the rung that makes it real.
 
@@ -243,6 +245,21 @@ its served definition is unchanged from birth (sha256
 keys successors to definition changes. The census counts gain
 `system_records`, its record-id claims extend to system
 records, and it verifies minigame judge references (SYS-07).
+
+SYS-08/09 add `descent_violation` (the descent law: D-1659
+transcribed from the ruling text — entry points and chambers
+on every floor, doors resolving on both sides, two-way stairs
+pairing adjacent floors with no skip) and
+`not_implemented_until_rung3` (level narrative fields and
+trigger dialogue, which Rung 3 owns). `meister_scene_define`,
+`meister_scene_validate`, and `meister_level_compose` (its
+structural half) are real since Rung 2, with served
+definitions unchanged from birth (sha256 d2d90af3…,
+9f6096e2…, 2949a9be…). The SYS-08 plan text asks for
+successor evidence for the scene tools; the records law keys
+successors to definition changes, so none is owed — the
+disagreement is recorded here rather than resolved by
+inventing records the law does not call for.
 
 ## 6. Resources, prompts, other surfaces
 

@@ -154,7 +154,10 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         return group_not_loaded(&spec, profile);
     }
     // Rung 1 made Groups 1–2 real; Rung 2 adds system_define
-    // (SYS-02..07). Every other unlisted group stays a seam.
+    // (SYS-02..07), scene_define/scene_validate (SYS-08), and
+    // level_compose's structural half (SYS-09; its narrative
+    // fields still refuse until Rung 3). Every other unlisted
+    // group stays a seam.
     let store = Store::from_env();
     match name {
         "meister_project_create" => store_result(store.create_project(args)),
@@ -164,6 +167,9 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         "meister_cast_lock" => store_result(store.lock_cast(args)),
         "meister_canon_check" => store_result(store.canon_census(args)),
         "meister_system_define" => store_result(store.define_system(args)),
+        "meister_scene_define" => store_result(store.define_scene(args)),
+        "meister_scene_validate" => store_result(store.validate_scene(args)),
+        "meister_level_compose" => store_result(store.compose_level(args)),
         _ => seam_result(&spec),
     }
 }
@@ -264,28 +270,25 @@ mod tests {
 
     #[test]
     fn allowed_envelope_reaches_the_seam() {
-        // A Group 3 seam (Rung 2): the allowed envelope falls
+        // A Group 4 seam (Rung 3): the allowed envelope falls
         // through the gate to the seam error, unchanged.
+        // (Group 3's tools all became real at Rung 2.)
         let args = json!({"envelope": good_envelope(),
-                          "project_id": "first-light",
-                          "scene_id": "floor-01",
-                          "graph": {}});
-        let result = call_tool(full(), "meister_scene_define", &args);
+                          "project_id": "first-light"});
+        let result = call_tool(full(), "meister_dialogue_author", &args);
         assert!(result.is_error.unwrap_or(false));
         let body = result_json(&result);
         assert_eq!(body["error"]["code"], "not_implemented");
-        assert_eq!(body["error"]["rung"], 2);
+        assert_eq!(body["error"]["rung"], 3);
     }
 
     #[test]
     fn in_profile_calls_dispatch_as_before() {
-        // systems carries Group 3: the call reaches its seam.
+        // narrative carries Group 4: the call reaches its seam.
         let args = json!({"envelope": good_envelope(),
-                          "project_id": "first-light",
-                          "scene_id": "floor-01",
-                          "graph": {}});
-        for name in ["systems", "niflheim-floor", "full"] {
-            let result = call_tool(profile(name), "meister_scene_define", &args);
+                          "project_id": "first-light"});
+        for name in ["narrative", "niflheim-floor", "full"] {
+            let result = call_tool(profile(name), "meister_dialogue_author", &args);
             assert_eq!(
                 result_json(&result)["error"]["code"],
                 "not_implemented",

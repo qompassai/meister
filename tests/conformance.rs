@@ -192,20 +192,20 @@ fn lane_check_allows_sfw_qompass_over_the_wire() {
 
 #[test]
 fn sfw_envelope_reaches_the_seam() {
-    // A Group 3 seam (Rung 2): the allowed envelope still falls
+    // A Group 4 seam (Rung 3): the allowed envelope still falls
     // through the gate to the seam error, unchanged by Rung 1.
+    // (Group 3's tools all became real at Rung 2.)
     let req = call(
         1,
-        "meister_scene_define",
+        "meister_dialogue_author",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "p1", "scene_id": "s1",
-                           "graph": {}}),
+                           "project_id": "p1"}),
     );
     let resps = rpc(&[&discover(), &req]);
     assert_eq!(resps[1]["result"]["isError"], true);
     let body = result_json(&resps[1]);
     assert_eq!(body["error"]["code"], "not_implemented");
-    assert_eq!(body["error"]["rung"], 2);
+    assert_eq!(body["error"]["rung"], 3);
 }
 
 // ---------- adversarial ----------
@@ -971,13 +971,12 @@ fn in_profile_calls_run_under_their_profile() {
         &[&discover(), &inspect],
     );
     assert_eq!(result_json(&resps[1])["project_id"], "profile-game");
-    // The bundle carries Group 3: the call reaches its seam.
+    // The bundle carries Group 4: the call reaches its seam.
     let scene = call(
         1,
-        "meister_scene_define",
+        "meister_dialogue_author",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "profile-game", "scene_id": "s1",
-                           "graph": {}}),
+                           "project_id": "profile-game"}),
     );
     let resps = rpc_profile(
         Some("niflheim-floor"),

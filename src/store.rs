@@ -82,7 +82,7 @@ const MAX_RECORD_BYTES: u64 = 1_048_576;
 /// `project.json` beside them is the one record outside a
 /// directory. A rung that adds a record kind adds its directory
 /// here, and the state hash covers it from that moment.
-const RECORD_DIRS: &[&str] = &["cast", "systems"];
+const RECORD_DIRS: &[&str] = &["cast", "systems", "scenes", "levels"];
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
 /// Name of the cross-process lock file under the store root. The
@@ -224,6 +224,18 @@ impl Store {
 
     fn project_file(&self, project_id: &str) -> PathBuf {
         self.project_dir(project_id).join("project.json")
+    }
+
+    fn scene_file(&self, project_id: &str, scene_id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join("scenes")
+            .join(format!("{scene_id}.json"))
+    }
+
+    fn level_file(&self, project_id: &str, level_id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join("levels")
+            .join(format!("{level_id}.json"))
     }
 
     fn system_file(&self, project_id: &str, system_id: &str) -> PathBuf {
@@ -557,25 +569,39 @@ impl Store {
     /// The project's system records as (relative path, record),
     /// sorted by path: the census's view of the `systems/` family.
     fn read_system_records(&self, project_id: &str) -> StoreResult<Vec<(String, Value)>> {
-        let dir = self.project_dir(project_id).join("systems");
+        self.read_family_records(project_id, "systems")
+    }
+
+    /// One record family's records as (relative path, record),
+    /// sorted by path.
+    fn read_family_records(
+        &self,
+        project_id: &str,
+        family: &str,
+    ) -> StoreResult<Vec<(String, Value)>> {
+        let dir = self.project_dir(project_id).join(family);
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(StoreError::io(format!("cannot list systems: {e}"))),
+            Err(e) => {
+                return Err(StoreError::io(format!("cannot list {family}: {e}")));
+            }
         };
         let mut records = Vec::new();
         for entry in entries {
-            let entry = entry.map_err(|e| StoreError::io(format!("systems entry: {e}")))?;
+            let entry = entry.map_err(|e| StoreError::io(format!("{family} entry: {e}")))?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
             if records.len() >= MAX_CAST_PER_PROJECT {
-                return Err(StoreError::io("systems exceed the per-project bound"));
+                return Err(StoreError::io(
+                    "a record family exceeds the per-project bound",
+                ));
             }
             if let Some(record) = read_json_file(&path)? {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                records.push((format!("systems/{name}"), record));
+                records.push((format!("{family}/{name}"), record));
             }
         }
         records.sort_by(|a, b| a.0.cmp(&b.0));
@@ -600,6 +626,172 @@ impl Store {
             }
         }
         Ok(flags)
+    }
+
+    /// `meister_scene_define` (SYS-08): author one scene graph
+    /// record into the project's `scenes/` family, born
+    /// `candidate`. Define checks the graph's shape (nodes with
+    /// unique valid ids, edge/link endpoints as strings); the
+    /// structural verdict is `meister_scene_validate`'s job.
+    pub fn define_scene(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_define_scene(args))
+    }
+
+    fn plan_define_scene(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let scene_id = arg_id(args, "scene_id")?;
+        self.read_project(&project_id)?;
+        let graph = args
+            .get("graph")
+            .filter(|v| v.is_object())
+            .ok_or_else(|| StoreError::invalid_record("graph must be an object"))?;
+        scene_graph_shape(graph)?;
+        let file = self.scene_file(&project_id, &scene_id);
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("scene {scene_id} already exists in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let record = json!({
+            "record_type": "meister_scene",
+            "schema_version": 1,
+            "project_id": project_id,
+            "scene_id": scene_id,
+            "status": "candidate",
+            "envelope": envelope,
+            "graph": graph,
+        });
+        let body = json!({
+            "project_id": project_id,
+            "scene_id": scene_id,
+            "status": "candidate",
+            "record_path": file.display().to_string(),
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body,
+        })
+    }
+
+    /// `meister_scene_validate` (SYS-08): the structural verdict
+    /// over a stored scene — SYS-01 checks plus orphan checks,
+    /// returned as `{valid, refusals[]}` with one typed code per
+    /// refusal. A read: it writes nothing.
+    pub fn validate_scene(&self, args: &Value) -> StoreResult<Value> {
+        let project_id = arg_id(args, "project_id")?;
+        let scene_id = arg_id(args, "scene_id")?;
+        self.read_project(&project_id)?;
+        let file = self.scene_file(&project_id, &scene_id);
+        let record = read_json_file(&file)?.ok_or_else(|| {
+            StoreError::new(
+                "not_found",
+                format!("scene {scene_id} not found in {project_id}"),
+            )
+        })?;
+        let refusals = scene_refusals(&record["graph"]);
+        Ok(json!({
+            "scene_id": scene_id,
+            "valid": refusals.is_empty(),
+            "refusals": refusals,
+        }))
+    }
+
+    /// `meister_level_compose` (SYS-09), structural half: author
+    /// one level record into the project's `levels/` family,
+    /// born `candidate`. The layout must satisfy the descent law
+    /// (D-1659, transcribed in `validate_descent_layout`);
+    /// narrative fields refuse as `not_implemented_until_rung3`
+    /// — Rung 3 owns them.
+    pub fn compose_level(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_compose_level(args))
+    }
+
+    fn plan_compose_level(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let level_id = arg_id(args, "level_id")?;
+        self.read_project(&project_id)?;
+        let layout = args
+            .get("layout")
+            .filter(|v| v.is_object())
+            .ok_or_else(|| StoreError::invalid_record("layout must be an object"))?;
+        if layout.get("narrative").is_some_and(|v| !v.is_null()) {
+            return Err(StoreError::new(
+                "not_implemented_until_rung3",
+                "level narrative fields become real at Rung 3",
+            ));
+        }
+        let triggers = match args.get("triggers") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .cloned()
+                .ok_or_else(|| StoreError::invalid_record("triggers must be an array"))?,
+        };
+        for trigger in &triggers {
+            if trigger.get("dialogue").is_some_and(|v| !v.is_null())
+                || trigger.get("narrative").is_some_and(|v| !v.is_null())
+            {
+                return Err(StoreError::new(
+                    "not_implemented_until_rung3",
+                    "trigger dialogue and narrative fields become real at Rung 3",
+                ));
+            }
+        }
+        let mut dag_ids: BTreeSet<String> = BTreeSet::new();
+        let mut minigame_ids: BTreeSet<String> = BTreeSet::new();
+        for (_, record) in self.read_system_records(&project_id)? {
+            match record["kind"].as_str() {
+                Some("progression_dag") => {
+                    if let Some(id) = record["system_id"].as_str() {
+                        dag_ids.insert(id.to_string());
+                    }
+                }
+                Some("minigame") => {
+                    if let Some(id) = record["system_id"].as_str() {
+                        minigame_ids.insert(id.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let floor_count = validate_descent_layout(layout, &dag_ids, &minigame_ids)?;
+        let file = self.level_file(&project_id, &level_id);
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("level {level_id} already exists in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let record = json!({
+            "record_type": "meister_level",
+            "schema_version": 1,
+            "project_id": project_id,
+            "level_id": level_id,
+            "status": "candidate",
+            "envelope": envelope,
+            "layout": layout,
+            "triggers": triggers,
+        });
+        let body = json!({
+            "project_id": project_id,
+            "level_id": level_id,
+            "status": "candidate",
+            "floor_count": floor_count,
+            "record_path": file.display().to_string(),
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body,
+        })
     }
 
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
@@ -1510,8 +1702,12 @@ impl Census {
             chain_entries += m;
         }
         let systems = store.read_system_records(project_id)?;
+        let mut census_extra = systems.clone();
+        for family in ["scenes", "levels"] {
+            census_extra.extend(store.read_family_records(project_id, family)?);
+        }
         let (references, duplicate_ids) =
-            census_references(&mut b, store, project_id, &project, &cast, &systems);
+            census_references(&mut b, store, project_id, &project, &cast, &census_extra);
         census_systems(&mut b, &project_dir, &systems);
         let stale_reason = staleness(&state_hash, &store.state_hash(project_id)?, prior);
         let stale = stale_reason.is_some();
@@ -2213,6 +2409,328 @@ fn census_systems(b: &mut CensusBuilder, project_dir: &Path, systems: &[(String,
             detail,
         });
     }
+}
+
+/// The (from, to) pairs of one scene-graph edge list (`edges`
+/// or `links`); a missing list is empty, a malformed entry is
+/// a shape refusal.
+fn scene_pairs(graph: &Value, field: &str) -> StoreResult<Vec<(String, String)>> {
+    let Some(list) = graph.get(field) else {
+        return Ok(Vec::new());
+    };
+    let list = list.as_array().ok_or_else(|| {
+        StoreError::invalid_record(format!("scene graph {field} must be an array"))
+    })?;
+    let mut pairs = Vec::new();
+    for entry in list {
+        let from = entry["from"].as_str().ok_or_else(|| {
+            StoreError::invalid_record(format!(
+                "scene graph {field} entries name string from/to ids"
+            ))
+        })?;
+        let to = entry["to"].as_str().ok_or_else(|| {
+            StoreError::invalid_record(format!(
+                "scene graph {field} entries name string from/to ids"
+            ))
+        })?;
+        pairs.push((from.to_string(), to.to_string()));
+    }
+    Ok(pairs)
+}
+
+/// SYS-08, define-time shape: nodes carry unique valid ids;
+/// edge and link lists are well-formed pairs. Structural truth
+/// (dangling refs, cycles) is the validator's verdict, not the
+/// define's — a scene may be authored before it is sound.
+fn scene_graph_shape(graph: &Value) -> StoreResult<()> {
+    let nodes = graph["nodes"]
+        .as_array()
+        .ok_or_else(|| StoreError::invalid_record("scene graph nodes must be an array"))?;
+    if nodes.len() > graph::MAX_NODES {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!(
+                "scene graph has {} nodes, over the bound of {}",
+                nodes.len(),
+                graph::MAX_NODES
+            ),
+        ));
+    }
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for node in nodes {
+        let raw = node["id"]
+            .as_str()
+            .ok_or_else(|| StoreError::invalid_record("scene graph nodes carry string ids"))?;
+        let id = valid_id(raw)?;
+        if !seen.insert(id.clone()) {
+            return Err(StoreError::invalid_record(format!(
+                "scene node {id} is declared twice"
+            )));
+        }
+    }
+    let total = scene_pairs(graph, "edges")?.len() + scene_pairs(graph, "links")?.len();
+    if total > graph::MAX_EDGES {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!(
+                "scene graph has {total} edges and links, over the bound of {}",
+                graph::MAX_EDGES
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// SYS-08, the validator: SYS-01 checks plus orphan checks over
+/// a stored scene graph, as a list of typed refusal codes (one
+/// per refusal). Bounds first, then dangling references (edges
+/// and dialogue-link placeholders alike), then the cycle check
+/// a scene that declares itself acyclic must pass.
+fn scene_refusals(graph: &Value) -> Vec<String> {
+    let refusal = |code: &str| vec![code.to_string()];
+    if !graph.is_object() {
+        return refusal("invalid_record");
+    }
+    let Some(nodes) = graph["nodes"].as_array() else {
+        return refusal("invalid_record");
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for node in nodes {
+        match node["id"].as_str() {
+            Some(id) => ids.push(id.to_string()),
+            None => return refusal("invalid_record"),
+        }
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for id in &ids {
+        if !seen.insert(id.as_str()) {
+            return refusal("invalid_record");
+        }
+    }
+    let (Ok(edges), Ok(links)) = (scene_pairs(graph, "edges"), scene_pairs(graph, "links")) else {
+        return refusal("invalid_record");
+    };
+    if ids.len() > graph::MAX_NODES || edges.len() + links.len() > graph::MAX_EDGES {
+        return refusal("bound_exceeded");
+    }
+    let declared: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    let mut refusals: Vec<String> = Vec::new();
+    for (from, to) in edges.iter().chain(links.iter()) {
+        for end in [from, to] {
+            if !declared.contains(end.as_str()) {
+                refusals.push("graph_dangling_ref".to_string());
+            }
+        }
+    }
+    if graph["acyclic"].as_bool() == Some(true)
+        && let Err(e) = graph::validate(&ids, &edges, &[], true, false)
+    {
+        refusals.push(e.code().to_string());
+    }
+    refusals
+}
+
+const MAX_FLOORS: usize = 64;
+const MAX_CHAMBERS_PER_FLOOR: usize = 64;
+const MAX_DOORS_PER_FLOOR: usize = 128;
+const MAX_ENTRY_POINTS_PER_FLOOR: usize = 128;
+
+/// One descent-law refusal, naming the offending id.
+fn descent_violation(message: String) -> StoreError {
+    StoreError::new("descent_violation", message)
+}
+
+/// SYS-09 — the descent law, transcribed from the Owner's
+/// D-1659 ruling text (Rung 1 gate pack,
+/// source-notes/descent-d1659.md), not from the plan's
+/// paraphrase. The ruling says:
+///
+/// - "Each floor is a dungeon/cave level with doors/entry
+///   points" and "doors and entry points are first-class
+///   architecture, not decoration" → every floor declares at
+///   least one entry point, and every door resolves on both
+///   sides (both chambers it joins are declared chambers of
+///   the same floor).
+/// - "Cave/dungeon chambers are the floor form" → every floor
+///   declares at least one chamber.
+/// - "the player descends and ascends between floors" →
+///   movement between floors is two-way: each adjacent pair
+///   of floors is joined by a stairs edge whose direction is
+///   `both`.
+/// - "Niflheim is about the descent" as one standing
+///   structure of floors in order → the floors form an
+///   unbroken chain: stairs edges pair adjacent floors only,
+///   and every adjacent pair is paired (no floor is skipped).
+///
+/// Bounds (floors ≤ 64, chambers ≤ 64 per floor, doors ≤ 128
+/// per floor) and the `descent_violation` code are the plan's
+/// SYS-09 contract. Progression gates must name declared
+/// progression_dag systems and minigame placements declared
+/// minigame systems (the plan's SYS-09 references).
+///
+/// Returns the floor count.
+fn validate_descent_layout(
+    layout: &Value,
+    dag_ids: &BTreeSet<String>,
+    minigame_ids: &BTreeSet<String>,
+) -> StoreResult<usize> {
+    let floors = layout["floors"]
+        .as_array()
+        .ok_or_else(|| StoreError::invalid_record("a level layout declares its floors"))?;
+    if floors.len() > MAX_FLOORS {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!("{} floors exceeds the bound of {MAX_FLOORS}", floors.len()),
+        ));
+    }
+    if floors.is_empty() {
+        return Err(descent_violation(
+            "a level declares at least one floor".to_string(),
+        ));
+    }
+    let mut floor_ids: Vec<String> = Vec::new();
+    for floor in floors {
+        let floor_id = valid_id(&req_text(floor, "floor_id", MAX_ID_CHARS)?)?;
+        if floor_ids.contains(&floor_id) {
+            return Err(StoreError::invalid_record(format!(
+                "floor {floor_id} is declared twice"
+            )));
+        }
+        let chambers = floor["chambers"].as_array().ok_or_else(|| {
+            StoreError::invalid_record(format!("floor {floor_id} declares its chambers"))
+        })?;
+        if chambers.len() > MAX_CHAMBERS_PER_FLOOR {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!(
+                    "floor {floor_id} has {} chambers, over the bound of {MAX_CHAMBERS_PER_FLOOR}",
+                    chambers.len()
+                ),
+            ));
+        }
+        if chambers.is_empty() {
+            return Err(descent_violation(format!(
+                "floor {floor_id} declares no chambers: cave/dungeon chambers are the floor form (D-1659)"
+            )));
+        }
+        let mut chamber_ids: BTreeSet<String> = BTreeSet::new();
+        for chamber in chambers {
+            let raw = chamber["id"]
+                .as_str()
+                .ok_or_else(|| StoreError::invalid_record("chambers carry string ids"))?;
+            chamber_ids.insert(valid_id(raw)?);
+        }
+        let entry_points = floor["entry_points"].as_array().ok_or_else(|| {
+            StoreError::invalid_record(format!("floor {floor_id} declares its entry points"))
+        })?;
+        if entry_points.len() > MAX_ENTRY_POINTS_PER_FLOOR {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!(
+                    "floor {floor_id} has {} entry points, over the bound of {MAX_ENTRY_POINTS_PER_FLOOR}",
+                    entry_points.len()
+                ),
+            ));
+        }
+        if entry_points.is_empty() {
+            return Err(descent_violation(format!(
+                "floor {floor_id} declares no entry point: doors and entry points are first-class architecture (D-1659)"
+            )));
+        }
+        if let Some(doors) = floor.get("doors") {
+            let doors = doors.as_array().ok_or_else(|| {
+                StoreError::invalid_record(format!("floor {floor_id} doors must be an array"))
+            })?;
+            if doors.len() > MAX_DOORS_PER_FLOOR {
+                return Err(StoreError::new(
+                    "bound_exceeded",
+                    format!(
+                        "floor {floor_id} has {} doors, over the bound of {MAX_DOORS_PER_FLOOR}",
+                        doors.len()
+                    ),
+                ));
+            }
+            for door in doors {
+                let door_id = req_text(door, "id", MAX_ID_CHARS)?;
+                let between = door["between"].as_array().ok_or_else(|| {
+                    StoreError::invalid_record(format!(
+                        "door {door_id} names the two chambers it joins"
+                    ))
+                })?;
+                let sides: Vec<&str> = between.iter().filter_map(Value::as_str).collect();
+                if sides.len() != 2 || !sides.iter().all(|s| chamber_ids.contains(*s)) {
+                    return Err(descent_violation(format!(
+                        "door {door_id} on floor {floor_id} does not resolve on both sides"
+                    )));
+                }
+            }
+        }
+        floor_ids.push(floor_id);
+    }
+    // Stairs edges pair the floors into the descent's chain.
+    let stairs: &[Value] = match layout.get("stairs") {
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("stairs must be an array of edges"))?,
+        None => &[],
+    };
+    let mut paired: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for edge in stairs {
+        let edge_id = req_text(edge, "id", MAX_ID_CHARS)?;
+        let from = req_text(edge, "from_floor", MAX_ID_CHARS)?;
+        let to = req_text(edge, "to_floor", MAX_ID_CHARS)?;
+        let (Some(from_idx), Some(to_idx)) = (
+            floor_ids.iter().position(|f| f == &from),
+            floor_ids.iter().position(|f| f == &to),
+        ) else {
+            return Err(descent_violation(format!(
+                "stairs edge {edge_id} names an undeclared floor"
+            )));
+        };
+        if to_idx != from_idx + 1 {
+            return Err(descent_violation(format!(
+                "stairs edge {edge_id} does not pair adjacent floors in descent order: no floor is skipped"
+            )));
+        }
+        if edge["direction"].as_str() != Some("both") {
+            return Err(descent_violation(format!(
+                "stairs edge {edge_id} is not two-way: the player descends and ascends between floors (D-1659)"
+            )));
+        }
+        paired.insert((from_idx, to_idx));
+    }
+    for i in 0..floor_ids.len() - 1 {
+        if !paired.contains(&(i, i + 1)) {
+            return Err(descent_violation(format!(
+                "no stairs edge pairs floor {} with floor {}",
+                floor_ids[i],
+                floor_ids[i + 1]
+            )));
+        }
+    }
+    // Progression gates and minigame placements reference
+    // declared systems.
+    for (field, declared, what) in [
+        ("gates", dag_ids, "progression gate"),
+        ("minigames", minigame_ids, "minigame placement"),
+    ] {
+        if let Some(list) = layout.get(field) {
+            let list = list
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record(format!("{field} must be an array")))?;
+            for entry in list {
+                let entry_id = req_text(entry, "id", MAX_ID_CHARS)?;
+                let system_id = req_text(entry, "system_id", MAX_ID_CHARS)?;
+                if !declared.contains(&system_id) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("{what} {entry_id} names undeclared system {system_id}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(floors.len())
 }
 
 fn census_project(
@@ -3407,6 +3925,293 @@ mod tests {
             check_named(&body, "system:coin-flip:judge")["status"],
             "unverified"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- SYS-08/09: scenes and the descent law ----------
+
+    fn scene_args(scene_id: &str, graph: Value) -> Value {
+        let mut args = json!({"envelope": envelope(), "project_id": "first-light",
+               "scene_id": scene_id, "graph": graph});
+        args["envelope"]["record_id"] = json!(format!("rec-scene-{scene_id}"));
+        args
+    }
+
+    fn three_node_graph() -> Value {
+        json!({"nodes": [{"id": "entry"}, {"id": "vault"}, {"id": "shrine"}],
+               "edges": [{"from": "entry", "to": "vault"},
+                         {"from": "vault", "to": "shrine"}],
+               "links": [{"id": "l1", "from": "entry", "to": "shrine"}]})
+    }
+
+    #[test]
+    fn a_three_node_scene_defines_and_validates() {
+        let (store, root, _source) = scaffolded("sys-scene");
+        let body = store
+            .define_scene(&scene_args("gatehouse", three_node_graph()))
+            .unwrap();
+        assert_eq!(body["status"], "candidate");
+        let verdict = store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "gatehouse"}))
+            .unwrap();
+        assert_eq!(verdict["valid"], true);
+        assert_eq!(verdict["refusals"], json!([]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_cycle_where_the_scene_declares_itself_acyclic_is_refused() {
+        let (store, root, _source) = scaffolded("sys-scene-cycle");
+        let mut graph = three_node_graph();
+        graph["acyclic"] = json!(true);
+        graph["edges"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"from": "shrine", "to": "entry"}));
+        store.define_scene(&scene_args("loop", graph)).unwrap();
+        let verdict = store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "loop"}))
+            .unwrap();
+        assert_eq!(verdict["valid"], false);
+        assert!(
+            verdict["refusals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "graph_cycle"),
+            "verdict: {verdict}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_dangling_dialogue_link_is_refused() {
+        let (store, root, _source) = scaffolded("sys-scene-dangling");
+        let mut graph = three_node_graph();
+        graph["links"][0]["to"] = json!("nowhere");
+        store.define_scene(&scene_args("broken", graph)).unwrap();
+        let verdict = store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "broken"}))
+            .unwrap();
+        assert_eq!(verdict["valid"], false);
+        assert!(
+            verdict["refusals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "graph_dangling_ref"),
+            "verdict: {verdict}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_an_oversized_scene_graph_is_refused() {
+        let (store, root, _source) = scaffolded("sys-scene-oversized");
+        let nodes: Vec<Value> = (0..513).map(|i| json!({"id": format!("n{i}")})).collect();
+        let graph = json!({"nodes": nodes, "edges": []});
+        // Define refuses it outright (bound_exceeded)…
+        let err = store
+            .define_scene(&scene_args("huge", graph.clone()))
+            .unwrap_err();
+        assert_eq!(err.code, "bound_exceeded");
+        // …and a hand-written oversized record (authored behind
+        // the server's back) is refused by the validator.
+        let dir = root.join("first-light/scenes");
+        fs::create_dir_all(&dir).unwrap();
+        let record = json!({"record_type": "meister_scene",
+               "project_id": "first-light", "scene_id": "huge",
+               "status": "candidate", "envelope": envelope(),
+               "graph": graph});
+        fs::write(dir.join("huge.json"), record.to_string()).unwrap();
+        let verdict = store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "huge"}))
+            .unwrap();
+        assert_eq!(verdict["valid"], false);
+        assert!(
+            verdict["refusals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "bound_exceeded"),
+            "verdict: {verdict}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn floor(floor_id: &str, chambers: &[&str], doors: Value) -> Value {
+        json!({"floor_id": floor_id,
+               "chambers": chambers.iter().map(|c| json!({"id": c})).collect::<Vec<_>>(),
+               "entry_points": [{"id": "landing"}],
+               "doors": doors})
+    }
+
+    fn descent_layout() -> Value {
+        json!({"floors": [
+            floor("floor-1", &["entry-hall", "vault"],
+                  json!([{"id": "d1", "between": ["entry-hall", "vault"]}])),
+            floor("floor-2", &["crypt"], json!([])),
+            floor("floor-3", &["deep-vault"], json!([]))
+        ],
+        "stairs": [
+            {"id": "s1", "from_floor": "floor-1", "to_floor": "floor-2",
+             "direction": "both"},
+            {"id": "s2", "from_floor": "floor-2", "to_floor": "floor-3",
+             "direction": "both"}
+        ]})
+    }
+
+    fn level_args(layout: Value) -> Value {
+        let mut args = json!({"envelope": envelope(), "project_id": "first-light",
+               "level_id": "the-descent", "layout": layout});
+        args["envelope"]["record_id"] = json!("rec-level-descent");
+        args
+    }
+
+    #[test]
+    fn a_synthetic_three_floor_descent_composes() {
+        let (store, root, _source) = scaffolded("sys-descent");
+        let body = store.compose_level(&level_args(descent_layout())).unwrap();
+        assert_eq!(body["status"], "candidate");
+        assert_eq!(body["floor_count"], 3);
+        assert!(root.join("first-light/levels/the-descent.json").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_floor_with_no_entry_point_is_a_descent_violation() {
+        let (store, root, _source) = scaffolded("sys-descent-noentry");
+        let mut layout = descent_layout();
+        layout["floors"][1]["entry_points"] = json!([]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        assert!(err.message.contains("floor-2"), "message: {}", err.message);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_floor_with_no_chambers_is_a_descent_violation() {
+        let (store, root, _source) = scaffolded("sys-descent-nochamber");
+        let mut layout = descent_layout();
+        layout["floors"][0]["chambers"] = json!([]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_one_sided_door_is_a_descent_violation() {
+        let (store, root, _source) = scaffolded("sys-descent-door");
+        let mut layout = descent_layout();
+        layout["floors"][0]["doors"] =
+            json!([{"id": "d-ghost", "between": ["entry-hall", "nowhere"]}]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        assert!(err.message.contains("d-ghost"), "message: {}", err.message);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_skipped_floor_is_a_descent_violation() {
+        let (store, root, _source) = scaffolded("sys-descent-skip");
+        let mut layout = descent_layout();
+        layout["stairs"] = json!([
+            {"id": "s1", "from_floor": "floor-1", "to_floor": "floor-3",
+             "direction": "both"}
+        ]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_missing_stairs_pair_is_a_descent_violation() {
+        let (store, root, _source) = scaffolded("sys-descent-unpaired");
+        let mut layout = descent_layout();
+        layout["stairs"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|e| e["id"] != "s2");
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        assert!(err.message.contains("floor-3"), "message: {}", err.message);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_one_way_stairs_are_a_descent_violation() {
+        // D-1659: the player descends AND ascends between floors.
+        let (store, root, _source) = scaffolded("sys-descent-oneway");
+        let mut layout = descent_layout();
+        layout["stairs"][0]["direction"] = json!("down");
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_stairs_to_an_undeclared_floor_are_a_descent_violation() {
+        let (store, root, _source) = scaffolded("sys-descent-ghost");
+        let mut layout = descent_layout();
+        layout["stairs"][1]["to_floor"] = json!("floor-99");
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_level_narrative_fields_wait_for_rung3() {
+        let (store, root, _source) = scaffolded("sys-descent-narrative");
+        let mut layout = descent_layout();
+        layout["narrative"] = json!({"intro": "once upon a time"});
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "not_implemented_until_rung3");
+        // The refusal wrote nothing.
+        assert!(!root.join("first-light/levels/the-descent.json").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_gate_on_an_undeclared_progression_system_is_dangling() {
+        let (store, root, _source) = scaffolded("sys-descent-gate");
+        let mut layout = descent_layout();
+        layout["gates"] = json!([{"id": "g1", "system_id": "no-such-dag"}]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "graph_dangling_ref");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_descent_with_declared_gates_and_minigames_composes() {
+        let (store, root, _source) = scaffolded("sys-descent-full");
+        store
+            .define_system(&system_args(
+                "descent-dag",
+                "progression_dag",
+                json!({"nodes": [{"id": "floor-1"},
+                                 {"id": "floor-2", "requires": ["floor-1"]}]}),
+            ))
+            .unwrap();
+        let judge_dir = root.join("first-light/judges");
+        fs::create_dir_all(&judge_dir).unwrap();
+        fs::write(judge_dir.join("coin.txt"), b"abc").unwrap();
+        store
+            .define_system(&system_args(
+                "coin-flip",
+                "minigame",
+                json!({"rules": "call it",
+                       "judge": {"path": "judges/coin.txt", "sha256": ABC_SHA}}),
+            ))
+            .unwrap();
+        let mut layout = descent_layout();
+        layout["gates"] = json!([{"id": "g1", "system_id": "descent-dag"}]);
+        layout["minigames"] = json!([{"id": "m1", "system_id": "coin-flip"}]);
+        let body = store.compose_level(&level_args(layout)).unwrap();
+        assert_eq!(body["floor_count"], 3);
         let _ = fs::remove_dir_all(&root);
     }
 
