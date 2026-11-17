@@ -73,7 +73,7 @@ its rows as work moves.
 | PK-7b | Remaining pack builds from gated dossiers | ASTRA | TODO | One pack per commission. |
 | CONF-7 | Per-pack conformance dry-runs | LOCAL | TODO | Batches; Pax gates results. |
 | TEACH-7 | Teaching layer completion | CLAUDE | TODO | |
-| TUI-7 | Meister TUI completion pass | ASTRA | TODO | Fleet TUI pattern (D-1562). |
+| TUI-7 | Meister TUI (initial build — none exists; pulled forward from Rung 7 by Owner ruling 2026-11-17) | PROGRAMME | CLAIMED 2026-11-17 | Built by the fleet TUI completion programme (coordinator lane pax-tui-rung2) on branch `pax/meister-tui-20261117`; full pattern per DESIGN D2. |
 | GATE-7 | Rung 7 gate | PAX | TODO | |
 
 ## Rung 8 — Release
