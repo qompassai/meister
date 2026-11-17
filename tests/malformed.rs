@@ -239,7 +239,9 @@ fn malformed_corpus_refuses_every_fixture_with_its_code() {
         let expected = fixture["expected_code"].as_str().expect("expected code");
         let result = server.call(tool, fixture["arguments"].clone());
         if result["isError"] != json!(true) {
-            failures.push(format!("{fid}: expected refusal {expected}, call succeeded"));
+            failures.push(format!(
+                "{fid}: expected refusal {expected}, call succeeded"
+            ));
             continue;
         }
         let body = body_json(&result);
@@ -251,7 +253,11 @@ fn malformed_corpus_refuses_every_fixture_with_its_code() {
             ));
         }
     }
-    assert!(failures.is_empty(), "corpus failures:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "corpus failures:\n{}",
+        failures.join("\n")
+    );
 
     // The server is alive and the store is untouched.
     let alive = server.call(
