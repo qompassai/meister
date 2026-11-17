@@ -253,6 +253,15 @@ capability extension whose params carry the provisioning
 facts (implementation rmcp, registry name, and `invocation`:
 stdio transport, command, no args, protocol era 2026-07-28)
 so a client config can be generated from the card alone.
+Since EFLO-04 the same params carry `profiles` — one whole
+invocation entry per declared surface profile (§3), each the
+base invocation plus `env: {"MEISTER_PROFILE": "<profile>"}` —
+and `defaultProfile` (`core`), the profile the bare invocation
+launches. A client config can therefore be generated per
+profile from the card alone. The card still declares exactly
+one interface: profiles are launch variants of the one MCP
+server, not further interfaces. `server.json` stays
+single-identity and names no profile.
 Correction of record: the card was born with an empty
 `supportedInterfaces` and a `stateTransitionHistory` field
 that v1.0 removed — neither spec-valid. Both were corrected
@@ -263,9 +272,13 @@ tests now pin the corrected profile.
 Maintained invariant: card and server.json agree exactly on the
 join keys — card `name` == server.json `title`, card `version`
 == server.json `version`, extension `registryName` ==
-server.json `name`. The invariant is held by
-`tests/manifest_agreement.rs`; any change to one file that
-breaks it fails the gate.
+server.json `name`; and the card's profile entries equal the
+server's declared profiles — same names, same order, none
+missing, none extra, none twice, each entry launching the
+profile it names. The invariant is held by
+`tests/manifest_agreement.rs`, which reads the declared list
+from the built binary and launches every card entry; any change
+to one side that breaks it fails the gate.
 
 ## 9. Bloch birth records
 
