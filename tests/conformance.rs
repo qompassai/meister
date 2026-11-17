@@ -1156,3 +1156,85 @@ fn adv_out_of_profile_refusals_are_pre_mutation() {
     assert!(!empty.exists(), "a refused call created the store root");
     let _ = std::fs::remove_dir_all(&store);
 }
+
+// ---------- Rung 4: asset routes over the wire ----------
+
+#[test]
+fn asset_routes_cover_every_media_format() {
+    let store = fresh_store();
+    let create = call(
+        1,
+        "meister_project_create",
+        serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                           "name": "Route Game", "engine": "bevy",
+                           "genre_pack": "puzzle"}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &create]);
+    assert_eq!(result_json(&resps[1])["project_id"], "route-game");
+    // One intake per media-map format, then one route per
+    // format (two sessions: pipelined calls race, and a
+    // route depends on its intake having landed).
+    let kinds = [
+        "still_2d",
+        "pixel",
+        "animation",
+        "model_3d",
+        "effect",
+        "audio",
+        "voice",
+        "text",
+        "video",
+    ];
+    let mut intake_reqs: Vec<String> = vec![discover()];
+    for (i, kind) in kinds.iter().enumerate() {
+        intake_reqs.push(call(
+            10 + i as i64,
+            "meister_asset_intake",
+            serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                               "project_id": "route-game",
+                               "asset_id": format!("fmt-{i}"),
+                               "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                               "kind": kind,
+                               "provenance": {"tool": "wai", "attribution": "verified"}}),
+        ));
+    }
+    let refs: Vec<&str> = intake_reqs.iter().map(String::as_str).collect();
+    let resps = rpc_profile(Some("assets"), &std::env::temp_dir(), &store, &refs);
+    for (i, kind) in kinds.iter().enumerate() {
+        let body = result_json(&resps[i + 1]);
+        assert_eq!(body["status"], "candidate", "{kind}: {body}");
+    }
+    let mut route_reqs: Vec<String> = vec![discover()];
+    for (i, kind) in kinds.iter().enumerate() {
+        let target = if *kind == "voice" {
+            "eigenstyle"
+        } else {
+            "lumen"
+        };
+        route_reqs.push(call(
+            30 + i as i64,
+            "meister_asset_route",
+            serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                               "project_id": "route-game",
+                               "asset_id": format!("fmt-{i}"),
+                               "target": target,
+                               "purpose": "specialist work"}),
+        ));
+    }
+    let refs: Vec<&str> = route_reqs.iter().map(String::as_str).collect();
+    let resps = rpc_profile(Some("assets"), &std::env::temp_dir(), &store, &refs);
+    for (i, kind) in kinds.iter().enumerate() {
+        let target = if *kind == "voice" {
+            "eigenstyle"
+        } else {
+            "lumen"
+        };
+        let body = result_json(&resps[i + 1]);
+        assert_eq!(
+            body["handoff_id"],
+            format!("fmt-{i}-{target}"),
+            "{kind}: {body}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&store);
+}
