@@ -933,6 +933,8 @@ pub fn specs() -> Vec<ToolSpec> {
                     ),
                     ("kind", s()),
                     ("provenance", free_obj()),
+                    ("chain", free_obj()),
+                    ("drift", free_obj()),
                 ],
                 &["project_id", "asset_id", "sha256", "kind", "provenance"],
             ),

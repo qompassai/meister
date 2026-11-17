@@ -91,6 +91,9 @@ const RECORD_DIRS: &[&str] = &[
     "narrative",
     "verdicts",
     "emissions",
+    "assets",
+    "routes",
+    "custody",
 ];
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
@@ -592,6 +595,75 @@ pub const {const_name}: &str = \"{}\";
         escape_rust_str(&json)
     );
     (module, const_name, body)
+}
+
+/// The media-map kinds an asset may be (AST-01).
+const ASSET_KINDS: [&str; 9] = [
+    "still_2d",
+    "pixel",
+    "animation",
+    "model_3d",
+    "effect",
+    "audio",
+    "voice",
+    "text",
+    "video",
+];
+
+/// The keeper chain's required fields, in check order
+/// (AST-02): the first missing one is named.
+const CHAIN_FIELDS: [&str; 8] = [
+    "canon_references",
+    "prompt_pair",
+    "checkpoint",
+    "sampler",
+    "conditioning",
+    "seed",
+    "finish_ops",
+    "final_sha256",
+];
+
+/// Whether one chain field is present and well-formed.
+fn chain_field_present(chain: &Value, field: &str) -> bool {
+    match field {
+        "canon_references" => chain["canon_references"].as_array().is_some_and(|refs| {
+            !refs.is_empty()
+                && refs.iter().all(|r| {
+                    r["ref"].as_str().is_some_and(|v| !v.is_empty())
+                        && r["sha256"].as_str().is_some_and(|v| v.len() == 64)
+                })
+        }),
+        "prompt_pair" => {
+            chain["prompt_pair"].is_object()
+                && chain["prompt_pair"]["positive"].as_str().is_some()
+                && chain["prompt_pair"]["negative"].as_str().is_some()
+        }
+        "checkpoint" => {
+            chain["checkpoint"].is_object()
+                && chain["checkpoint"]["name"]
+                    .as_str()
+                    .is_some_and(|v| !v.is_empty())
+                && chain["checkpoint"]["sha256"]
+                    .as_str()
+                    .is_some_and(|v| v.len() == 64)
+        }
+        "sampler" => chain["sampler"].is_object(),
+        "conditioning" => chain["conditioning"].is_array(),
+        "seed" => !chain["seed"].is_null(),
+        "finish_ops" => chain["finish_ops"].is_array(),
+        "final_sha256" => chain["final_sha256"]
+            .as_str()
+            .is_some_and(|v| v.len() == 64),
+        _ => false,
+    }
+}
+
+/// Whether a chain carries a custody-frozen node: a finish
+/// operation a human has touched (AST-03).
+fn chain_has_custody_node(chain: &Value) -> bool {
+    chain["finish_ops"]
+        .as_array()
+        .is_some_and(|ops| ops.iter().any(|op| op["human_touched"] == json!(true)))
 }
 
 impl Store {
@@ -2192,6 +2264,310 @@ channel = \"nightly-2026-10-30\"
                 format!("no emitter named {emitter} in this build"),
             )),
         }
+    }
+
+    fn asset_file(&self, project_id: &str, asset_id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join("assets")
+            .join(format!("{asset_id}.json"))
+    }
+
+    fn read_asset(&self, project_id: &str, asset_id: &str) -> StoreResult<Value> {
+        let raw = fs::read_to_string(self.asset_file(project_id, asset_id)).map_err(|_| {
+            StoreError::new(
+                "not_found",
+                format!("asset {asset_id} not found in {project_id}"),
+            )
+        })?;
+        serde_json::from_str(&raw)
+            .map_err(|e| StoreError::invalid_record(format!("asset record: {e}")))
+    }
+
+    /// The cast record for one character, if the project
+    /// holds it.
+    fn find_cast(&self, project_id: &str, character_id: &str) -> Option<Value> {
+        self.read_cast_records(project_id)
+            .ok()?
+            .into_iter()
+            .find(|r| r["character_id"].as_str() == Some(character_id))
+    }
+
+    pub fn asset_intake(&self, args: &Value) -> StoreResult<Value> {
+        // AST-03 custody: re-intake against an asset whose
+        // chain carries a human-touched node is refused,
+        // and the refusal is recorded verbatim first.
+        let project_id = arg_id(args, "project_id")?;
+        let asset_id = arg_id(args, "asset_id")?;
+        let file = self.asset_file(&project_id, &asset_id);
+        if file.exists() {
+            if let Ok(existing) = self.read_asset(&project_id, &asset_id) {
+                if chain_has_custody_node(&existing["chain"]) {
+                    self.record_custody_refusal(&project_id, &asset_id, args)?;
+                    return Err(StoreError::new(
+                        "custody_frozen",
+                        format!(
+                            "asset {asset_id} carries a finish node a human has touched; \
+                             it is custody-frozen and this proposal is refused (the refusal is on record)"
+                        ),
+                    ));
+                }
+            }
+        }
+        self.mutate(|| self.plan_asset_intake(args))
+    }
+
+    /// Append one custody-refusal record (AST-03): the
+    /// refusal itself is evidence and is kept verbatim.
+    fn record_custody_refusal(
+        &self,
+        project_id: &str,
+        asset_id: &str,
+        args: &Value,
+    ) -> StoreResult<()> {
+        let seq = self
+            .read_family_records(project_id, "custody")
+            .map_or(0, |v| v.len())
+            + 1;
+        let envelope = args.get("envelope").cloned().unwrap_or(Value::Null);
+        let record = json!({
+            "record_type": "meister_custody_refusal",
+            "schema_version": 1,
+            "project_id": project_id,
+            "asset_id": asset_id,
+            "refusal": "custody_frozen",
+            "detail": "proposal touched a custody-frozen asset; refused verbatim",
+            "seq": seq,
+            "envelope": envelope,
+            "status": "recorded",
+        });
+        let file = self
+            .project_dir(project_id)
+            .join("custody")
+            .join(format!("{asset_id}-{seq}.json"));
+        self.mutate(|| {
+            Ok(Planned {
+                write: Some((file.clone(), record.clone())),
+                body: json!({}),
+            })
+        })?;
+        Ok(())
+    }
+
+    /// `meister_asset_intake` (AST-01): intake one media
+    /// artifact — its declared hash (verified against the
+    /// bytes when provenance names a source path), its
+    /// kind from the media map, and its provenance,
+    /// including art-tool provenance per asset. An
+    /// attribution is recorded as `verified` or
+    /// `unverifiable` (the default); an unverifiable one is
+    /// marked, never repeated as fact. An asset of a locked
+    /// character records the character's current lock hash
+    /// (AST-04).
+    fn plan_asset_intake(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let asset_id = arg_id(args, "asset_id")?;
+        let sha = req_text(args, "sha256", MAX_ID_CHARS)?.to_lowercase();
+        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(StoreError::invalid("sha256 must be 64 hex characters"));
+        }
+        let kind = req_text(args, "kind", MAX_ID_CHARS)?;
+        if !ASSET_KINDS.contains(&kind.as_str()) {
+            return Err(StoreError::invalid_record(format!(
+                "kind {kind} is not in the media map"
+            )));
+        }
+        self.read_project(&project_id)?;
+        let provenance = args
+            .get("provenance")
+            .filter(|v| v.is_object())
+            .ok_or_else(|| StoreError::invalid_record("provenance must be an object"))?
+            .clone();
+        let tool = provenance["tool"].as_str().unwrap_or("");
+        if tool.is_empty() {
+            return Err(StoreError::invalid_record(
+                "provenance is missing its art tool",
+            ));
+        }
+        let attribution = provenance["attribution"]
+            .as_str()
+            .unwrap_or("unverifiable")
+            .to_string();
+        if !["verified", "unverifiable"].contains(&attribution.as_str()) {
+            return Err(StoreError::invalid_record(
+                "attribution must be verified or unverifiable",
+            ));
+        }
+        let mut provenance = provenance;
+        provenance["attribution"] = json!(attribution);
+        if let Some(source_path) = provenance["source_path"].as_str() {
+            let bytes = fs::read(source_path).map_err(|e| {
+                StoreError::io(format!("cannot read asset source {source_path}: {e}"))
+            })?;
+            if bytes.len() > 32 * 1024 * 1024 {
+                return Err(StoreError::new(
+                    "bound_exceeded",
+                    "asset source exceeds the 32 MiB read bound",
+                ));
+            }
+            let actual = sha256_hex(&bytes);
+            if actual != sha {
+                return Err(StoreError::new(
+                    "asset_hash_mismatch",
+                    format!(
+                        "declared sha256 {sha} does not match the bytes at {source_path} ({actual})"
+                    ),
+                ));
+            }
+        }
+        let mut character_id: Option<String> = None;
+        let mut lock_hash: Option<String> = None;
+        if let Some(cid) = provenance["character_id"].as_str() {
+            let cast = self.find_cast(&project_id, cid).ok_or_else(|| {
+                StoreError::new(
+                    "character_unknown",
+                    format!("asset names character {cid}, who is not in {project_id}"),
+                )
+            })?;
+            character_id = Some(cid.to_string());
+            if let Some(lock) = cast.get("identity_lock").filter(|v| !v.is_null()) {
+                lock_hash = lock["lock_hash"].as_str().map(str::to_string);
+            }
+        }
+        let file = self.asset_file(&project_id, &asset_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("asset {asset_id} already exists in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let record = json!({
+            "record_type": "meister_asset",
+            "schema_version": 1,
+            "project_id": project_id,
+            "asset_id": asset_id,
+            "sha256": sha,
+            "kind": kind,
+            "provenance": provenance,
+            "character_id": character_id,
+            "lock_hash": lock_hash,
+            "chain": args.get("chain").cloned().unwrap_or(Value::Null),
+            "drift": args.get("drift").cloned().unwrap_or(Value::Null),
+            "envelope": envelope,
+            "status": "candidate",
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({
+                "project_id": project_id,
+                "asset_id": asset_id,
+                "sha256": sha,
+                "status": "candidate",
+            }),
+        })
+    }
+
+    /// `meister_asset_chain_get` (AST-02/03/04): judge one
+    /// asset's keeper chain. A missing chain is the typed
+    /// state `absent-unverified`. A present chain is
+    /// checked field by field — the first missing field is
+    /// named (`chain_incomplete`, the published gate: an
+    /// incomplete chain is not a keeper) — then its final
+    /// hash against the asset's, its claimed verdict
+    /// against the standing verdict record
+    /// (`canon_unadopted`), the drift measurement an
+    /// admitted keeper must carry (`drift_unmeasured`),
+    /// and the character lock it was taken under
+    /// (`lock_stale`).
+    pub fn asset_chain_get(&self, args: &Value) -> StoreResult<Value> {
+        let project_id = arg_id(args, "project_id")?;
+        let asset_id = arg_id(args, "asset_id")?;
+        self.read_project(&project_id)?;
+        let asset = self.read_asset(&project_id, &asset_id)?;
+        // AST-04: the lock the asset was taken under must
+        // still be the character's lock.
+        if let (Some(cid), Some(taken)) =
+            (asset["character_id"].as_str(), asset["lock_hash"].as_str())
+        {
+            let current = self
+                .find_cast(&project_id, cid)
+                .and_then(|cast| {
+                    cast.get("identity_lock")
+                        .filter(|v| !v.is_null())
+                        .and_then(|lock| lock["lock_hash"].as_str().map(str::to_string))
+                })
+                .unwrap_or_default();
+            if current != taken {
+                return Err(StoreError::new(
+                    "lock_stale",
+                    format!(
+                        "asset {asset_id} was taken under lock {taken} for {cid}; the standing lock is {current}"
+                    ),
+                ));
+            }
+        }
+        let state = match asset["envelope"]["record_id"].as_str() {
+            Some(rid) => match self.latest_rulings(&project_id).get(rid) {
+                Some(r) if r == "adopt" => "admitted",
+                Some(r) if r == "quarantine" => "quarantined",
+                _ => "candidate",
+            },
+            None => "candidate",
+        };
+        let chain = &asset["chain"];
+        if chain.is_null() {
+            return Ok(json!({
+                "project_id": project_id,
+                "asset_id": asset_id,
+                "chain_complete": false,
+                "chain_state": "absent-unverified",
+                "state": state,
+                "chain": Value::Null,
+            }));
+        }
+        for field in CHAIN_FIELDS {
+            if !chain_field_present(chain, field) {
+                return Err(StoreError::new(
+                    "chain_incomplete",
+                    format!("asset {asset_id}: keeper chain is missing {field}"),
+                ));
+            }
+        }
+        if chain["final_sha256"].as_str() != asset["sha256"].as_str() {
+            return Err(StoreError::new(
+                "chain_hash_mismatch",
+                format!(
+                    "asset {asset_id}: chain final hash {} != asset hash {}",
+                    chain["final_sha256"], asset["sha256"]
+                ),
+            ));
+        }
+        if chain["verdict"]["ruling"].as_str() == Some("admitted") && state != "admitted" {
+            return Err(StoreError::new(
+                "canon_unadopted",
+                format!(
+                    "asset {asset_id}: the chain claims admission but no verdict record adopts it"
+                ),
+            ));
+        }
+        if state == "admitted" && asset["drift"].is_null() {
+            return Err(StoreError::new(
+                "drift_unmeasured",
+                format!("asset {asset_id} stands admitted with no drift measurement attached"),
+            ));
+        }
+        Ok(json!({
+            "project_id": project_id,
+            "asset_id": asset_id,
+            "chain_complete": true,
+            "chain_state": "complete",
+            "state": state,
+            "chain": chain,
+        }))
     }
 
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
@@ -7110,6 +7486,238 @@ mod tests {
         let main_rs = fs::read_to_string(target.join("src/main.rs")).unwrap();
         assert!(main_rs.contains("#[allow(dead_code)]"), "{main_rs}");
         assert!(target.join("src/content/dialogue_gate_words.rs").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- AST: assets ----------
+
+    const ASSET_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn ast_store(tag: &str) -> (Store, PathBuf, PathBuf) {
+        let (store, root) = temp_store(tag);
+        let source = source_file(&root);
+        store.create_project(&create_args()).unwrap();
+        store.add_cast(&cast_args(&source)).unwrap();
+        store.lock_cast(&lock_args(&source)).unwrap();
+        (store, root, source)
+    }
+
+    fn full_chain() -> Value {
+        json!({
+            "canon_references": [{"ref": "sheet", "sha256": ASSET_SHA}],
+            "prompt_pair": {"positive": "a warden at a gate", "negative": "blur"},
+            "checkpoint": {"name": "wai", "sha256": ASSET_SHA},
+            "sampler": {"name": "euler", "steps": 20},
+            "conditioning": [],
+            "seed": 42,
+            "finish_ops": [{"op": "crop"}],
+            "final_sha256": ASSET_SHA,
+            "verdict": {"ruling": "candidate", "source": "session"},
+        })
+    }
+
+    fn intake_args(asset_id: &str, kind: &str) -> Value {
+        json!({"envelope": env_id("rec-asset"), "project_id": "first-light",
+               "asset_id": asset_id, "sha256": ASSET_SHA, "kind": kind,
+               "provenance": {"tool": "wai", "attribution": "verified"}})
+    }
+
+    #[test]
+    fn intake_one_asset_of_each_kind() {
+        let (store, root, _src) = ast_store("ast1");
+        for (i, kind) in [
+            "still_2d",
+            "pixel",
+            "animation",
+            "model_3d",
+            "effect",
+            "audio",
+            "voice",
+            "text",
+            "video",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let body = store
+                .asset_intake(&intake_args(&format!("asset-{i}"), kind))
+                .unwrap();
+            assert_eq!(body["status"], "candidate", "{kind}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_intake_refusals() {
+        let (store, root, source) = ast_store("ast2");
+        // A hash that does not match the bytes.
+        let mut a = intake_args("bad-hash", "still_2d");
+        a["sha256"] = json!("0".repeat(64));
+        a["provenance"]["source_path"] = json!(source.display().to_string());
+        let err = store.asset_intake(&a).unwrap_err();
+        assert_eq!(err.code, "asset_hash_mismatch");
+        // An unknown kind.
+        let err = store
+            .asset_intake(&intake_args("bad-kind", "hologram"))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        // Provenance missing its tool.
+        let mut a = intake_args("no-tool", "pixel");
+        a["provenance"] = json!({"attribution": "verified"});
+        let err = store.asset_intake(&a).unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        // An asset of an undeclared character.
+        let mut a = intake_args("ghost-asset", "still_2d");
+        a["provenance"]["character_id"] = json!("ghost");
+        let err = store.asset_intake(&a).unwrap_err();
+        assert_eq!(err.code, "character_unknown");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chain_complete_reports_true_and_absent_is_typed() {
+        let (store, root, _src) = ast_store("ast3");
+        let mut a = intake_args("keeper", "still_2d");
+        a["chain"] = full_chain();
+        store.asset_intake(&a).unwrap();
+        let body = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "keeper"}))
+            .unwrap();
+        assert_eq!(body["chain_complete"], true);
+        assert_eq!(body["state"], "candidate");
+        store.asset_intake(&intake_args("bare", "pixel")).unwrap();
+        let body = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "bare"}))
+            .unwrap();
+        assert_eq!(body["chain_complete"], false);
+        assert_eq!(body["chain_state"], "absent-unverified");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_chain_missing_each_field_is_named() {
+        let (store, root, _src) = ast_store("ast4");
+        for field in [
+            "canon_references",
+            "prompt_pair",
+            "checkpoint",
+            "sampler",
+            "conditioning",
+            "seed",
+            "finish_ops",
+            "final_sha256",
+        ] {
+            let mut chain = full_chain();
+            chain.as_object_mut().unwrap().remove(field);
+            let mut a = intake_args(&format!("broken-{field}"), "still_2d");
+            a["chain"] = chain;
+            store.asset_intake(&a).unwrap();
+            let err = store
+                .asset_chain_get(
+                    &json!({"project_id": "first-light", "asset_id": format!("broken-{field}")}),
+                )
+                .unwrap_err();
+            assert_eq!(err.code, "chain_incomplete", "{field}");
+            assert!(err.message.contains(field), "{field}: {}", err.message);
+        }
+        // The chain's final hash must be the asset's.
+        let mut chain = full_chain();
+        chain["final_sha256"] = json!("0".repeat(64));
+        let mut a = intake_args("wrong-final", "still_2d");
+        a["chain"] = chain;
+        store.asset_intake(&a).unwrap();
+        let err = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "wrong-final"}))
+            .unwrap_err();
+        assert_eq!(err.code, "chain_hash_mismatch");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn admission_needs_the_verdict_and_the_drift_measurement() {
+        let (store, root, _src) = ast_store("ast5");
+        // The chain text claims admission; no verdict stands.
+        let mut chain = full_chain();
+        chain["verdict"] = json!({"ruling": "admitted", "source": "a note"});
+        let mut a = intake_args("hopeful", "still_2d");
+        a["chain"] = chain.clone();
+        store.asset_intake(&a).unwrap();
+        let err = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "hopeful"}))
+            .unwrap_err();
+        assert_eq!(err.code, "canon_unadopted");
+        // Adopt it through a verdict: now admission stands,
+        // but there is no drift measurement.
+        store
+            .record_verdict(&verdict_args(
+                "pack-ast",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-asset")]),
+            ))
+            .unwrap();
+        let err = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "hopeful"}))
+            .unwrap_err();
+        assert_eq!(err.code, "drift_unmeasured");
+        // A second asset, adopted with drift attached,
+        // reports admitted and complete.
+        let mut a2 = intake_args("measured", "still_2d");
+        a2["envelope"] = env_id("rec-asset-2");
+        a2["chain"] = chain;
+        a2["drift"] = json!({"palette_roles": {"hair": "#c33"}, "prompt_conformance": 0.97});
+        store.asset_intake(&a2).unwrap();
+        store
+            .record_verdict(&verdict_args(
+                "pack-ast-2",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-asset-2")]),
+            ))
+            .unwrap();
+        let body = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "measured"}))
+            .unwrap();
+        assert_eq!(body["state"], "admitted");
+        assert_eq!(body["chain_complete"], true);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lock_staleness_fails_the_asset() {
+        let (store, root, _src) = ast_store("ast6");
+        let mut a = intake_args("warden-sheet", "still_2d");
+        a["provenance"]["character_id"] = json!("warden");
+        store.asset_intake(&a).unwrap();
+        // The standing lock still matches: no refusal.
+        store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "warden-sheet"}))
+            .unwrap();
+        // A different lock stands now (hand-edited, as a
+        // re-lock under a new ruling would land it).
+        let cast_path = root.join("first-light/cast/warden.json");
+        let mut cast: Value =
+            serde_json::from_str(&fs::read_to_string(&cast_path).unwrap()).unwrap();
+        cast["identity_lock"]["lock_hash"] = json!("f".repeat(64));
+        fs::write(&cast_path, serde_json::to_string_pretty(&cast).unwrap()).unwrap();
+        let err = store
+            .asset_chain_get(&json!({"project_id": "first-light", "asset_id": "warden-sheet"}))
+            .unwrap_err();
+        assert_eq!(err.code, "lock_stale");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn custody_frozen_asset_refuses_proposals_and_records_it() {
+        let (store, root, _src) = ast_store("ast7");
+        let mut chain = full_chain();
+        chain["finish_ops"] = json!([{"op": "hand-clean", "human_touched": true}]);
+        let mut a = intake_args("touched", "still_2d");
+        a["chain"] = chain;
+        store.asset_intake(&a).unwrap();
+        let err = store.asset_intake(&a).unwrap_err();
+        assert_eq!(err.code, "custody_frozen");
+        let custody_dir = root.join("first-light/custody");
+        let recorded = fs::read_dir(&custody_dir).unwrap().count();
+        assert_eq!(recorded, 1, "the refusal is on record");
         let _ = fs::remove_dir_all(&root);
     }
 }
