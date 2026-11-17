@@ -437,6 +437,66 @@ fn validate_story_beats(
     Ok(())
 }
 
+/// One node of a playtest graph, normalized from a dialogue
+/// line or a story beat.
+struct PlayNode {
+    id: String,
+    edges: Vec<String>,
+    ending: bool,
+}
+
+/// Normalize a dialogue record into playtest nodes: a line's
+/// edges are its choices when it has them, else the next line
+/// in authored order; a line with no way onward is an ending.
+fn dialogue_nodes(record: &Value) -> Vec<PlayNode> {
+    let lines = record["lines"].as_array().cloned().unwrap_or_default();
+    let mut nodes = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let id = line["id"].as_str().unwrap_or_default().to_string();
+        let choices = line["choices"].as_array().cloned().unwrap_or_default();
+        let mut edges: Vec<String> = Vec::new();
+        if !choices.is_empty() {
+            for choice in &choices {
+                if let Some(target) = choice["target"].as_str() {
+                    edges.push(target.to_string());
+                }
+            }
+        } else if let Some(next) = lines.get(i + 1) {
+            if let Some(next_id) = next["id"].as_str() {
+                edges.push(next_id.to_string());
+            }
+        }
+        let ending = edges.is_empty();
+        nodes.push(PlayNode { id, edges, ending });
+    }
+    nodes
+}
+
+/// Normalize a story arc into playtest nodes: a beat's edges
+/// are its choices when it has them, else its `next`; beats of
+/// kind `ending` are endings.
+fn story_nodes(record: &Value) -> Vec<PlayNode> {
+    let beats = record["beats"].as_array().cloned().unwrap_or_default();
+    let mut nodes = Vec::new();
+    for beat in &beats {
+        let id = beat["id"].as_str().unwrap_or_default().to_string();
+        let choices = beat["choices"].as_array().cloned().unwrap_or_default();
+        let mut edges: Vec<String> = Vec::new();
+        if !choices.is_empty() {
+            for choice in &choices {
+                if let Some(target) = choice["target"].as_str() {
+                    edges.push(target.to_string());
+                }
+            }
+        } else if let Some(next) = beat["next"].as_str() {
+            edges.push(next.to_string());
+        }
+        let ending = beat["kind"].as_str() == Some("ending");
+        nodes.push(PlayNode { id, edges, ending });
+    }
+    nodes
+}
+
 impl Store {
     /// A store at an explicit root (tests, gate drivers).
     pub fn new(root: PathBuf) -> Self {
@@ -1245,6 +1305,139 @@ impl Store {
             write: Some((file, record)),
             body: json!({"arc_id": arc_id, "beat_count": beat_count}),
         })
+    }
+
+    /// `meister_playtest_generate` (NAR-06): a deterministic,
+    /// bounded traversal of one authored graph (a dialogue or
+    /// a story arc). Playthroughs are the distinct
+    /// root-to-ending paths; endings never reached are
+    /// reported by id — coverage is never asserted beyond
+    /// what the traversal observed. A node already on the
+    /// current path ends that branch (cycles cannot loop).
+    /// Bounds: at most 10,000 playthroughs and 4,096 steps
+    /// per path; a bound hit is reported with the coverage
+    /// gathered so far. A graph over the node bound is
+    /// refused before traversal (`playtest_bound_exceeded`).
+    pub fn generate_playtest(&self, args: &Value) -> StoreResult<Value> {
+        let project_id = arg_id(args, "project_id")?;
+        let graph_ref = arg_id(args, "graph_ref")?;
+        self.read_project(&project_id)?;
+        let file = self.narrative_file(&project_id, &graph_ref);
+        let raw = fs::read_to_string(&file).map_err(|_| {
+            StoreError::new(
+                "not_found",
+                format!("graph {graph_ref} not found in {project_id}"),
+            )
+        })?;
+        let record: Value = serde_json::from_str(&raw)
+            .map_err(|e| StoreError::invalid_record(format!("graph record: {e}")))?;
+        let nodes = match record["record_type"].as_str() {
+            Some("meister_dialogue") => dialogue_nodes(&record),
+            Some("meister_story_arc") => story_nodes(&record),
+            _ => {
+                return Err(StoreError::new(
+                    "not_found",
+                    format!("{graph_ref} is not a dialogue or story arc"),
+                ));
+            }
+        };
+        if nodes.len() > crate::graph::MAX_NODES {
+            return Err(StoreError::new(
+                "playtest_bound_exceeded",
+                format!(
+                    "graph has {} nodes; the bound is {}",
+                    nodes.len(),
+                    crate::graph::MAX_NODES
+                ),
+            ));
+        }
+        if nodes.is_empty() {
+            return Err(StoreError::invalid_record("the graph has no nodes"));
+        }
+        let index: std::collections::HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.as_str(), i))
+            .collect();
+        let mut endings_reached: Vec<String> = Vec::new();
+        let mut playthroughs = 0usize;
+        let mut bound_hit = false;
+        // Iterative DFS; each stack entry is (node, next edge
+        // index). `path` is the current node chain; a node
+        // already on it ends the branch.
+        let mut path: Vec<usize> = vec![0];
+        let mut cursor: Vec<usize> = vec![0];
+        let mut done = false;
+        while !done {
+            let top = *path.last().unwrap();
+            let node = &nodes[top];
+            if node.ending {
+                playthroughs += 1;
+                if !endings_reached.contains(&node.id) {
+                    endings_reached.push(node.id.clone());
+                }
+                if playthroughs >= 10_000 {
+                    bound_hit = true;
+                    break;
+                }
+                path.pop();
+                cursor.pop();
+                if path.is_empty() {
+                    done = true;
+                }
+                continue;
+            }
+            let edge_idx = *cursor.last().unwrap();
+            if edge_idx >= node.edges.len() || path.len() > 4096 {
+                if path.len() > 4096 {
+                    bound_hit = true;
+                }
+                path.pop();
+                cursor.pop();
+                if path.is_empty() {
+                    done = true;
+                }
+                continue;
+            }
+            *cursor.last_mut().unwrap() += 1;
+            let target = &node.edges[edge_idx];
+            if let Some(&ti) = index.get(target.as_str()) {
+                if path.contains(&ti) {
+                    continue; // cycle: this branch ends here
+                }
+                path.push(ti);
+                cursor.push(0);
+            }
+        }
+        endings_reached.sort();
+        let mut endings_unreached: Vec<String> = nodes
+            .iter()
+            .filter(|n| n.ending && !endings_reached.contains(&n.id))
+            .map(|n| n.id.clone())
+            .collect();
+        endings_unreached.sort();
+        let run_id = format!(
+            "pt-{}",
+            &sha256_hex(
+                canonical_json(&json!({
+                    "project_id": project_id,
+                    "graph_ref": graph_ref,
+                    "playthroughs": playthroughs,
+                    "endings_reached": endings_reached,
+                }))
+                .as_bytes()
+            )[..12]
+        );
+        Ok(json!({
+            "project_id": project_id,
+            "graph_ref": graph_ref,
+            "playthroughs": playthroughs,
+            "endings_reached": endings_reached.len(),
+            "endings_reached_ids": endings_reached,
+            "endings_unreached": endings_unreached,
+            "bound_hit": bound_hit,
+            "run_id": run_id,
+        }))
     }
 
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
@@ -5698,5 +5891,122 @@ mod tests {
                     {"id": "q1", "title": "Prove it", "objective_flag": "nope"}]}]}))
             .unwrap_err();
         assert_eq!(err.code, "flag_undeclared");
+    }
+
+    // ---------- NAR-06: playtest ----------
+
+    fn slice_store(tag: &str) -> (Store, PathBuf) {
+        let (store, root) = nar_store(tag);
+        store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+            "arc_id": "gate-arc",
+            "beats": [
+                {"id": "arrive", "choices": [
+                    {"label": "Prove", "target": "proven"},
+                    {"label": "Turn back", "target": "turned"}]},
+                {"id": "proven", "kind": "ending"},
+                {"id": "turned", "kind": "ending"}
+            ]}))
+            .unwrap();
+        (store, root)
+    }
+
+    #[test]
+    fn playtest_slice_reaches_every_ending() {
+        let (store, root) = slice_store("pt1");
+        let body = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "gate-arc"}))
+            .unwrap();
+        assert_eq!(body["playthroughs"], 2);
+        assert_eq!(body["endings_reached"], 2);
+        assert_eq!(body["endings_unreached"], json!([]));
+        assert_eq!(body["bound_hit"], false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playtest_twin_reports_the_unreached_ending_by_id() {
+        let (store, root) = nar_store("pt2");
+        store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+            "arc_id": "gate-arc",
+            "beats": [
+                {"id": "arrive", "choices": [
+                    {"label": "Prove", "target": "proven"}]},
+                {"id": "proven", "kind": "ending"},
+                {"id": "lost", "kind": "ending"}
+            ]}))
+            .unwrap();
+        let body = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "gate-arc"}))
+            .unwrap();
+        assert_eq!(body["playthroughs"], 1);
+        assert_eq!(body["endings_reached"], 1);
+        assert_eq!(body["endings_unreached"], json!(["lost"]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playtest_two_runs_are_byte_identical() {
+        let (store, root) = slice_store("pt3");
+        let args = json!({"project_id": "first-light", "graph_ref": "gate-arc"});
+        let a = store.generate_playtest(&args).unwrap();
+        let b = store.generate_playtest(&args).unwrap();
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playtest_cyclic_dialogue_terminates() {
+        let (store, root) = nar_store("pt4");
+        store
+            .author_dialogue(&json!({"envelope": envelope(), "project_id": "first-light",
+            "dialogue_id": "loop-words",
+            "lines": [
+                {"id": "a", "speaker": "warden", "text": "Again?",
+                 "choices": [
+                     {"label": "Loop", "target": "b"},
+                     {"label": "Stop", "target": "exit"}]},
+                {"id": "b", "speaker": "warden", "text": "And again?",
+                 "choices": [
+                     {"label": "Loop", "target": "a"},
+                     {"label": "Stop", "target": "exit"}]},
+                {"id": "exit", "speaker": "warden", "text": "Done."}
+            ]}))
+            .unwrap();
+        let body = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "loop-words"}))
+            .unwrap();
+        assert_eq!(body["playthroughs"], 2, "a->exit and a->b->exit: {body}");
+        assert_eq!(body["endings_reached"], 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_playtest_oversized_graph_is_refused_before_traversal() {
+        let (store, root) = nar_store("pt5");
+        // A hand-written record over the node bound (define
+        // would never admit it).
+        let beats: Vec<Value> = (0..513).map(|i| json!({"id": format!("b{i}")})).collect();
+        let record = json!({"record_type": "meister_story_arc",
+            "project_id": "first-light", "arc_id": "huge", "beats": beats});
+        fs::create_dir_all(root.join("first-light/narrative")).unwrap();
+        fs::write(
+            root.join("first-light/narrative/huge.json"),
+            serde_json::to_string(&record).unwrap(),
+        )
+        .unwrap();
+        let err = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "huge"}))
+            .unwrap_err();
+        assert_eq!(err.code, "playtest_bound_exceeded");
+        let _ = fs::remove_dir_all(&root);
     }
 }
