@@ -166,7 +166,7 @@ fn each_named_profile_is_measured_in_its_own_session() {
         .collect();
     assert_eq!(rows.len(), 2, "rows: {rows:?}");
     assert!(rows[0].starts_with("| `core` | 4 |"), "row: {}", rows[0]);
-    assert!(rows[1].starts_with("| `full` | 31 |"), "row: {}", rows[1]);
+    assert!(rows[1].starts_with("| `full` | 33 |"), "row: {}", rows[1]);
     // The script selects the profile itself: a caller's own
     // MEISTER_PROFILE does not leak into a named session.
     let leaked = dir.join("leaked.md");

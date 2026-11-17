@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.0 — 2026-11-17
+
+- Rung 3 — narrative authoring, freeze, and emit (branch
+  `pax/rung3-narrative-freeze-emit-20261116`; unmerged and
+  unpublished — the version names the branch state GATE-3
+  verified).
+- Groups 4–5 are real: `meister_dialogue_author` /
+  `meister_dialogue_get` (structured dialogue: bounded
+  lines, declared-flag conditions and effects, resolving
+  choice targets), `meister_reaction_set` (whole-body
+  reaction profiles on identity-locked cast),
+  `meister_story_define` (beats and quests with resolving
+  references), and the narrative half of
+  `meister_level_compose` (per-chamber scene/dialogue
+  composition and encounters under the descent law).
+- `meister_playtest_generate`: deterministic, bounded
+  traversal of a dialogue or story graph — distinct
+  root-to-ending playthroughs, endings reached, and
+  endings never reached by id; two runs byte-identical.
+- The census judges narrative now: sanitization hits
+  against a project's out-of-band denylist and cast
+  differentiation collisions are counted claims, and unit
+  states (ungated / gated / sealed) are counted.
+- Freeze: `meister_verdict_record` (new tool) records an
+  Owner ruling on a verdict pack, every subject pinned by
+  record id and current canonical hash. A record standing
+  adopted refuses every edit path (`frozen_record`) until
+  a later verdict thaws it. Project lifecycle is derived
+  at read: scaffolded / authoring / frozen_slice /
+  emitted.
+- Emit: `meister_emit` (new tool) emits frozen records
+  under a configured emit root — `bevy-rust-content/1`
+  (one generated Rust module per record) and
+  `bevy-shell/1` (a fresh edition-2024 shell on the estate
+  nightly pin) — with an emit manifest carrying one
+  SHA-256 per file; a second identical emit is
+  byte-identical, and foreign files in a target are
+  refused. EMT-04 compiled a frozen slice of Niflheim
+  Floor 12 both ways.
+- EFLO: narrative measures 2,166 of the 2,500-token
+  budget; the niflheim-floor bundle measures 2,918 (over
+  by 418 now that it carries freeze and emit) — a waiver
+  for the bundle is requested in COMPLIANCE.md §3 and
+  stands as an Owner decision. Eighteen of 33 tools are
+  live; fifteen seams remain.
+
 ## 0.3.0 — 2026-11-17
 
 - Rung 2 — EFLO profiles, the store guarantees, and systems

@@ -170,6 +170,13 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         "meister_scene_define" => store_result(store.define_scene(args)),
         "meister_scene_validate" => store_result(store.validate_scene(args)),
         "meister_level_compose" => store_result(store.compose_level(args)),
+        "meister_dialogue_author" => store_result(store.author_dialogue(args)),
+        "meister_dialogue_get" => store_result(store.get_dialogue(args)),
+        "meister_reaction_set" => store_result(store.set_reaction(args)),
+        "meister_story_define" => store_result(store.define_story(args)),
+        "meister_playtest_generate" => store_result(store.generate_playtest(args)),
+        "meister_verdict_record" => store_result(store.record_verdict(args)),
+        "meister_emit" => store_result(store.emit(args)),
         _ => seam_result(&spec),
     }
 }
@@ -270,28 +277,32 @@ mod tests {
 
     #[test]
     fn allowed_envelope_reaches_the_seam() {
-        // A Group 4 seam (Rung 3): the allowed envelope falls
+        // A Group 6 seam (Rung 6): the allowed envelope falls
         // through the gate to the seam error, unchanged.
-        // (Group 3's tools all became real at Rung 2.)
+        // (Groups 3-5 became real at Rungs 2-3.)
         let args = json!({"envelope": good_envelope(),
                           "project_id": "first-light"});
-        let result = call_tool(full(), "meister_dialogue_author", &args);
+        let result = call_tool(full(), "meister_rating_record", &args);
         assert!(result.is_error.unwrap_or(false));
         let body = result_json(&result);
         assert_eq!(body["error"]["code"], "not_implemented");
-        assert_eq!(body["error"]["rung"], 3);
+        assert_eq!(body["error"]["rung"], 6);
     }
 
     #[test]
     fn in_profile_calls_dispatch_as_before() {
-        // narrative carries Group 4: the call reaches its seam.
+        // narrative carries Group 5: the call dispatches to
+        // the real tool (playtest answers not_found against
+        // the empty default store root — never the profile
+        // refusal and never the seam).
         let args = json!({"envelope": good_envelope(),
-                          "project_id": "first-light"});
+                          "project_id": "first-light",
+                          "graph_ref": "gate-arc"});
         for name in ["narrative", "niflheim-floor", "full"] {
-            let result = call_tool(profile(name), "meister_dialogue_author", &args);
+            let result = call_tool(profile(name), "meister_playtest_generate", &args);
             assert_eq!(
                 result_json(&result)["error"]["code"],
-                "not_implemented",
+                "not_found",
                 "profile {name}"
             );
         }

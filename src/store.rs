@@ -62,6 +62,7 @@ use crate::hash::sha256_hex;
 
 /// Environment variable naming the store root.
 pub const ENV_ROOT: &str = "MEISTER_PROJECTS_ROOT";
+const ENV_EMIT_ROOT: &str = "MEISTER_EMIT_ROOT";
 
 const MAX_ID_CHARS: usize = 64;
 const MAX_NAME_CHARS: usize = 120;
@@ -82,7 +83,15 @@ const MAX_RECORD_BYTES: u64 = 1_048_576;
 /// `project.json` beside them is the one record outside a
 /// directory. A rung that adds a record kind adds its directory
 /// here, and the state hash covers it from that moment.
-const RECORD_DIRS: &[&str] = &["cast", "systems", "scenes", "levels"];
+const RECORD_DIRS: &[&str] = &[
+    "cast",
+    "systems",
+    "scenes",
+    "levels",
+    "narrative",
+    "verdicts",
+    "emissions",
+];
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
 /// Name of the cross-process lock file under the store root. The
@@ -162,8 +171,427 @@ struct Planned {
 /// The store: one root directory holding every project.
 pub struct Store {
     root: PathBuf,
+    /// The emit root (EMT-01): `MEISTER_EMIT_ROOT` in the
+    /// serving environment; emit refuses without one.
+    emit_root: Option<PathBuf>,
     /// Bound on the store-lock wait; `LOCK_WAIT` outside tests.
     lock_wait: Duration,
+}
+
+/// Validate a record-level `unlock` list (FRZ-03): every entry
+/// names a declared flag. Undeclared -> `unlock_undeclared`.
+fn validate_unlock(args: &Value, flags: &BTreeSet<String>) -> StoreResult<Vec<String>> {
+    let mut out = Vec::new();
+    if let Some(list) = args.get("unlock") {
+        let arr = list
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("unlock must be an array of flag ids"))?;
+        for entry in arr {
+            let flag = entry.as_str().ok_or_else(|| {
+                StoreError::invalid_record("unlock entries must be flag id strings")
+            })?;
+            if !flags.contains(flag) {
+                return Err(StoreError::new(
+                    "unlock_undeclared",
+                    format!("unlock condition names undeclared flag {flag}"),
+                ));
+            }
+            out.push(flag.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Validate dialogue lines (NAR-01): structured lines whose
+/// speakers resolve to cast, whose conditions and continuity
+/// effects name declared flags, and whose choices and
+/// prerequisites resolve inside the record.
+fn validate_dialogue_lines(
+    store: &Store,
+    project_id: &str,
+    lines: &[Value],
+    flags: &BTreeSet<String>,
+) -> StoreResult<()> {
+    if lines.is_empty() {
+        return Err(StoreError::invalid_record(
+            "a dialogue record needs at least one line",
+        ));
+    }
+    if lines.len() > 2048 {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!("dialogue has {} lines; the bound is 2048", lines.len()),
+        ));
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for line in lines {
+        if !line.is_object() {
+            return Err(StoreError::invalid_record(
+                "dialogue lines must be objects (structured data, never loose prose)",
+            ));
+        }
+        let id = req_text(line, "id", MAX_ID_CHARS)?;
+        if ids.contains(&id) {
+            return Err(StoreError::invalid_record(format!(
+                "duplicate dialogue line id {id}"
+            )));
+        }
+        ids.push(id);
+    }
+    for line in lines {
+        let speaker = req_text(line, "speaker", MAX_ID_CHARS)?;
+        if !store.cast_file(project_id, &speaker).exists() {
+            return Err(StoreError::new(
+                "speaker_unknown",
+                format!("speaker {speaker} is not a cast character of this project"),
+            ));
+        }
+        let text = line
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| StoreError::invalid_record("dialogue line text must be a string"))?;
+        if text.chars().count() > MAX_TEXT_CHARS {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                "dialogue line text exceeds 500 chars",
+            ));
+        }
+        if text.trim().is_empty() {
+            return Err(StoreError::invalid_record(
+                "dialogue line text must not be empty",
+            ));
+        }
+        if let Some(choices) = line.get("choices") {
+            let choices = choices
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record("line choices must be an array"))?;
+            if choices.len() > 16 {
+                return Err(StoreError::new(
+                    "bound_exceeded",
+                    "a dialogue line has more than 16 choices",
+                ));
+            }
+            for choice in choices {
+                req_text(choice, "label", MAX_NAME_CHARS)?;
+                let target = req_text(choice, "target", MAX_ID_CHARS)?;
+                if !ids.contains(&target) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("choice target {target} is not a line of this dialogue"),
+                    ));
+                }
+            }
+        }
+        for key in ["conditions", "effects"] {
+            if let Some(list) = line.get(key) {
+                let list = list.as_array().ok_or_else(|| {
+                    StoreError::invalid_record(format!("line {key} must be an array"))
+                })?;
+                for entry in list {
+                    let flag = req_text(entry, "flag", MAX_ID_CHARS)?;
+                    if !flags.contains(&flag) {
+                        return Err(StoreError::new(
+                            "flag_undeclared",
+                            format!("flag {flag} is not declared"),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(prereqs) = line.get("prerequisites") {
+            let prereqs = prereqs
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record("line prerequisites must be an array"))?;
+            for prereq in prereqs {
+                let target = prereq.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("prerequisites must be line id strings")
+                })?;
+                if !ids.iter().any(|i| i == target) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("prerequisite {target} is not a line of this dialogue"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate story beats (NAR-03): references resolve to the
+/// project's scenes, dialogues, and progression nodes; quest
+/// objectives name declared flags. An ending no beat leads to
+/// is NOT refused here — playtest reports it (NAR-06).
+fn validate_story_beats(
+    store: &Store,
+    project_id: &str,
+    beats: &[Value],
+    flags: &BTreeSet<String>,
+) -> StoreResult<()> {
+    if beats.is_empty() {
+        return Err(StoreError::invalid_record(
+            "a story arc needs at least one beat",
+        ));
+    }
+    if beats.len() > crate::graph::MAX_NODES {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!("story has {} beats; the bound is 512", beats.len()),
+        ));
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for beat in beats {
+        if !beat.is_object() {
+            return Err(StoreError::invalid_record("story beats must be objects"));
+        }
+        let id = req_text(beat, "id", MAX_ID_CHARS)?;
+        if ids.contains(&id) {
+            return Err(StoreError::invalid_record(format!(
+                "duplicate story beat id {id}"
+            )));
+        }
+        ids.push(id);
+    }
+    let scene_ids: Vec<String> = store
+        .read_family_records(project_id, "scenes")?
+        .into_iter()
+        .filter_map(|(_, r)| {
+            r.get("scene_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let dialogue_ids: Vec<String> = store
+        .read_family_records(project_id, "narrative")?
+        .into_iter()
+        .filter(|(_, r)| r.get("record_type").and_then(Value::as_str) == Some("meister_dialogue"))
+        .filter_map(|(_, r)| {
+            r.get("dialogue_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let mut progression_nodes: Vec<String> = Vec::new();
+    for (_, record) in store.read_family_records(project_id, "systems")? {
+        if record.get("kind").and_then(Value::as_str) == Some("progression_dag")
+            && let Some(nodes) = record
+                .get("spec")
+                .and_then(|s| s.get("nodes"))
+                .and_then(Value::as_array)
+        {
+            for node in nodes {
+                if let Some(id) = node.get("id").and_then(Value::as_str) {
+                    progression_nodes.push(id.to_string());
+                }
+            }
+        }
+    }
+    for beat in beats {
+        if let Some(choices) = beat.get("choices") {
+            let choices = choices
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record("beat choices must be an array"))?;
+            for choice in choices {
+                let target = req_text(choice, "target", MAX_ID_CHARS)?;
+                if !ids.contains(&target) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("beat choice target {target} is not a beat of this arc"),
+                    ));
+                }
+            }
+        }
+        if let Some(refs) = beat.get("refs") {
+            for (key, known, what) in [
+                ("scenes", &scene_ids, "scene"),
+                ("dialogues", &dialogue_ids, "dialogue"),
+                ("progression", &progression_nodes, "progression node"),
+            ] {
+                if let Some(list) = refs.get(key) {
+                    let list = list.as_array().ok_or_else(|| {
+                        StoreError::invalid_record(format!("beat refs {key} must be an array"))
+                    })?;
+                    for entry in list {
+                        let target = entry.as_str().ok_or_else(|| {
+                            StoreError::invalid_record("beat refs must be id strings")
+                        })?;
+                        if !known.iter().any(|k| k == target) {
+                            return Err(StoreError::new(
+                                "graph_dangling_ref",
+                                format!("beat references undeclared {what} {target}"),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(quests) = beat.get("quests") {
+            let quests = quests
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record("beat quests must be an array"))?;
+            for quest in quests {
+                req_text(quest, "id", MAX_ID_CHARS)?;
+                req_text(quest, "title", MAX_NAME_CHARS)?;
+                if let Some(flag) = quest.get("objective_flag") {
+                    let flag = flag.as_str().ok_or_else(|| {
+                        StoreError::invalid_record("quest objective_flag must be a string")
+                    })?;
+                    if !flags.contains(flag) {
+                        return Err(StoreError::new(
+                            "flag_undeclared",
+                            format!("flag {flag} is not declared"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One node of a playtest graph, normalized from a dialogue
+/// line or a story beat.
+struct PlayNode {
+    id: String,
+    edges: Vec<String>,
+    ending: bool,
+}
+
+/// Normalize a dialogue record into playtest nodes: a line's
+/// edges are its choices when it has them, else the next line
+/// in authored order; a line with no way onward is an ending.
+fn dialogue_nodes(record: &Value) -> Vec<PlayNode> {
+    let lines = record["lines"].as_array().cloned().unwrap_or_default();
+    let mut nodes = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let id = line["id"].as_str().unwrap_or_default().to_string();
+        let choices = line["choices"].as_array().cloned().unwrap_or_default();
+        let mut edges: Vec<String> = Vec::new();
+        if !choices.is_empty() {
+            for choice in &choices {
+                if let Some(target) = choice["target"].as_str() {
+                    edges.push(target.to_string());
+                }
+            }
+        } else if let Some(next) = lines.get(i + 1)
+            && let Some(next_id) = next["id"].as_str()
+        {
+            edges.push(next_id.to_string());
+        }
+        let ending = edges.is_empty();
+        nodes.push(PlayNode { id, edges, ending });
+    }
+    nodes
+}
+
+/// Normalize a story arc into playtest nodes: a beat's edges
+/// are its choices when it has them, else its `next`; beats of
+/// kind `ending` are endings.
+fn story_nodes(record: &Value) -> Vec<PlayNode> {
+    let beats = record["beats"].as_array().cloned().unwrap_or_default();
+    let mut nodes = Vec::new();
+    for beat in &beats {
+        let id = beat["id"].as_str().unwrap_or_default().to_string();
+        let choices = beat["choices"].as_array().cloned().unwrap_or_default();
+        let mut edges: Vec<String> = Vec::new();
+        if !choices.is_empty() {
+            for choice in &choices {
+                if let Some(target) = choice["target"].as_str() {
+                    edges.push(target.to_string());
+                }
+            }
+        } else if let Some(next) = beat["next"].as_str() {
+            edges.push(next.to_string());
+        }
+        let ending = beat["kind"].as_str() == Some("ending");
+        nodes.push(PlayNode { id, edges, ending });
+    }
+    nodes
+}
+
+/// The canonical content hash of one record: the hash a
+/// verdict subject pins (FRZ-01).
+fn record_hash(record: &Value) -> String {
+    sha256_hex(canonical_json(record).as_bytes())
+}
+
+/// The emitters this build carries (EMT-01..03).
+const EMITTERS: [&str; 2] = ["bevy-rust-content/1", "bevy-shell/1"];
+
+/// Escape a string into a Rust string literal body.
+fn escape_rust_str(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The generated module name and JSON const name for one
+/// subject record: `<kind>_<id>` from its record type and
+/// its own id field.
+fn subject_module(record: &Value) -> (String, String) {
+    let kind = record["record_type"]
+        .as_str()
+        .unwrap_or("meister_record")
+        .trim_start_matches("meister_");
+    let id = [
+        "scene_id",
+        "level_id",
+        "dialogue_id",
+        "arc_id",
+        "system_id",
+        "character_id",
+        "pack_id",
+        "project_id",
+    ]
+    .iter()
+    .find_map(|f| record[*f].as_str())
+    .unwrap_or("record");
+    let mut module: String = format!("{kind}_{id}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if module.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        module = format!("r_{module}");
+    }
+    let const_name = format!("{}_JSON", module.to_uppercase());
+    (module, const_name)
+}
+
+/// One generated content module: the frozen record's
+/// canonical JSON as a const, under a header naming the
+/// emitter, the subject set, and the source record.
+fn content_module(emitter: &str, set_hash: &str, record: &Value) -> (String, String, String) {
+    let (module, const_name) = subject_module(record);
+    let record_id = record["envelope"]["record_id"].as_str().unwrap_or("");
+    let record_type = record["record_type"].as_str().unwrap_or("");
+    let json = canonical_json(record);
+    let body = format!(
+        "//! Generated by meister_emit (emitter {emitter}). Do not edit by hand.
+//! Subject set: {set_hash}
+//! Source record: {record_id} ({record_type}), frozen by verdict.
+
+/// The canonical record JSON, exactly as frozen.
+pub const {const_name}: &str = \"{}\";
+",
+        escape_rust_str(&json)
+    );
+    (module, const_name, body)
 }
 
 impl Store {
@@ -171,8 +599,15 @@ impl Store {
     pub fn new(root: PathBuf) -> Self {
         Store {
             root,
+            emit_root: None,
             lock_wait: LOCK_WAIT,
         }
+    }
+
+    /// A store with an emit root (tests, gate drivers).
+    pub fn with_emit_root(mut self, emit_root: PathBuf) -> Self {
+        self.emit_root = Some(emit_root);
+        self
     }
 
     /// Run one mutation. The plan — every validation for the call,
@@ -194,6 +629,16 @@ impl Store {
     /// The serving store: root from the environment contract in
     /// the module docs.
     pub fn from_env() -> Self {
+        let store = Self::from_env_root();
+        if let Ok(emit_root) = std::env::var(ENV_EMIT_ROOT)
+            && !emit_root.trim().is_empty()
+        {
+            return store.with_emit_root(PathBuf::from(emit_root));
+        }
+        store
+    }
+
+    fn from_env_root() -> Self {
         if let Ok(root) = std::env::var(ENV_ROOT)
             && !root.trim().is_empty()
         {
@@ -236,6 +681,12 @@ impl Store {
         self.project_dir(project_id)
             .join("levels")
             .join(format!("{level_id}.json"))
+    }
+
+    fn narrative_file(&self, project_id: &str, name: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join("narrative")
+            .join(format!("{name}.json"))
     }
 
     fn system_file(&self, project_id: &str, system_id: &str) -> PathBuf {
@@ -335,6 +786,7 @@ impl Store {
             "content_label": record["envelope"]["content_label"],
             "status": record["status"],
             "cast_count": cast.len(),
+            "lifecycle": self.project_lifecycle(&project_id)?,
             "canon_fact_count": record["canon"].as_array().map_or(0, Vec::len),
             "project_path": self.project_dir(&project_id).display().to_string(),
         }))
@@ -408,6 +860,7 @@ impl Store {
             .ok_or_else(|| StoreError::invalid_record("identity must be an object"))?;
         validate_identity(identity)?;
         let file = self.cast_file(&project_id, &character_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -469,6 +922,7 @@ impl Store {
             .filter(|v| v.is_object())
             .ok_or_else(|| StoreError::invalid_record("lock must be an object"))?;
         validate_lock(lock, &record["identity"])?;
+        self.assert_not_frozen(&project_id, &record)?;
         let lock_hash = sha256_hex(canonical_json(lock).as_bytes());
         if let Some(existing) = record.get("identity_lock").filter(|v| !v.is_null()) {
             if existing["lock_hash"].as_str() == Some(lock_hash.as_str()) {
@@ -533,6 +987,7 @@ impl Store {
         let flags = self.declared_flags(&project_id)?;
         validate_system_spec(&kind, spec, &flags)?;
         let file = self.system_file(&project_id, &system_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -647,6 +1102,7 @@ impl Store {
             .ok_or_else(|| StoreError::invalid_record("graph must be an object"))?;
         scene_graph_shape(graph)?;
         let file = self.scene_file(&project_id, &scene_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -719,12 +1175,6 @@ impl Store {
             .get("layout")
             .filter(|v| v.is_object())
             .ok_or_else(|| StoreError::invalid_record("layout must be an object"))?;
-        if layout.get("narrative").is_some_and(|v| !v.is_null()) {
-            return Err(StoreError::new(
-                "not_implemented_until_rung3",
-                "level narrative fields become real at Rung 3",
-            ));
-        }
         let triggers = match args.get("triggers") {
             None => Vec::new(),
             Some(value) => value
@@ -732,16 +1182,6 @@ impl Store {
                 .cloned()
                 .ok_or_else(|| StoreError::invalid_record("triggers must be an array"))?,
         };
-        for trigger in &triggers {
-            if trigger.get("dialogue").is_some_and(|v| !v.is_null())
-                || trigger.get("narrative").is_some_and(|v| !v.is_null())
-            {
-                return Err(StoreError::new(
-                    "not_implemented_until_rung3",
-                    "trigger dialogue and narrative fields become real at Rung 3",
-                ));
-            }
-        }
         let mut dag_ids: BTreeSet<String> = BTreeSet::new();
         let mut minigame_ids: BTreeSet<String> = BTreeSet::new();
         for (_, record) in self.read_system_records(&project_id)? {
@@ -760,7 +1200,9 @@ impl Store {
             }
         }
         let floor_count = validate_descent_layout(layout, &dag_ids, &minigame_ids)?;
+        validate_level_narrative(self, &project_id, layout, &triggers)?;
         let file = self.level_file(&project_id, &level_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -771,12 +1213,16 @@ impl Store {
             .get("envelope")
             .cloned()
             .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let level_flags = self.declared_flags(&project_id)?;
+        let unlock = validate_unlock(args, &level_flags)?;
         let record = json!({
             "record_type": "meister_level",
             "schema_version": 1,
             "project_id": project_id,
             "level_id": level_id,
             "status": "candidate",
+            "unit_state": "ungated",
+            "unlock": unlock,
             "envelope": envelope,
             "layout": layout,
             "triggers": triggers,
@@ -792,6 +1238,960 @@ impl Store {
             write: Some((file, record)),
             body,
         })
+    }
+
+    /// `meister_dialogue_author` (NAR-01).
+    pub fn author_dialogue(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_author_dialogue(args))
+    }
+
+    fn plan_author_dialogue(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let dialogue_id = arg_id(args, "dialogue_id")?;
+        self.read_project(&project_id)?;
+        let lines = args
+            .get("lines")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                StoreError::invalid_record("lines must be an array of structured line objects")
+            })?
+            .clone();
+        let flags = self.declared_flags(&project_id)?;
+        validate_dialogue_lines(self, &project_id, &lines, &flags)?;
+        let unlock = validate_unlock(args, &flags)?;
+        let file = self.narrative_file(&project_id, &dialogue_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("dialogue {dialogue_id} already exists in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let line_count = lines.len();
+        let record = json!({
+            "record_type": "meister_dialogue",
+            "schema_version": 1,
+            "project_id": project_id,
+            "dialogue_id": dialogue_id,
+            "envelope": envelope,
+            "status": "candidate",
+            "unit_state": "ungated",
+            "unlock": unlock,
+            "lines": lines,
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({"dialogue_id": dialogue_id, "line_count": line_count}),
+        })
+    }
+
+    /// `meister_dialogue_get` (NAR-01): read one dialogue back.
+    pub fn get_dialogue(&self, args: &Value) -> StoreResult<Value> {
+        let project_id = arg_id(args, "project_id")?;
+        let dialogue_id = arg_id(args, "dialogue_id")?;
+        self.read_project(&project_id)?;
+        let file = self.narrative_file(&project_id, &dialogue_id);
+        let raw = fs::read_to_string(&file).map_err(|_| {
+            StoreError::new(
+                "not_found",
+                format!("dialogue {dialogue_id} not found in {project_id}"),
+            )
+        })?;
+        let record: Value = serde_json::from_str(&raw)
+            .map_err(|e| StoreError::invalid_record(format!("dialogue record: {e}")))?;
+        if record.get("record_type").and_then(Value::as_str) != Some("meister_dialogue") {
+            return Err(StoreError::new(
+                "not_found",
+                format!("{dialogue_id} is not a dialogue record"),
+            ));
+        }
+        Ok(json!({
+            "dialogue_id": dialogue_id,
+            "lines": record["lines"].clone(),
+        }))
+    }
+
+    /// `meister_reaction_set` (NAR-02): whole-body reaction
+    /// detail for one emotion of one character. The character
+    /// must be identity-locked first (D-1410).
+    pub fn set_reaction(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_set_reaction(args))
+    }
+
+    fn plan_set_reaction(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let character_id = arg_id(args, "character_id")?;
+        let emotion = arg_id(args, "emotion")?;
+        let posture = req_text(args, "posture", MAX_TEXT_CHARS)?;
+        let gesture = req_text(args, "gesture", MAX_TEXT_CHARS)?;
+        let stance = req_text(args, "stance", MAX_TEXT_CHARS)?;
+        self.read_project(&project_id)?;
+        let cast_file = self.cast_file(&project_id, &character_id);
+        let raw = fs::read_to_string(&cast_file).map_err(|_| {
+            StoreError::new(
+                "not_found",
+                format!("character {character_id} not found in {project_id}"),
+            )
+        })?;
+        let cast: Value = serde_json::from_str(&raw)
+            .map_err(|e| StoreError::invalid_record(format!("cast record: {e}")))?;
+        if cast.get("identity_lock").is_none_or(Value::is_null) {
+            return Err(StoreError::new(
+                "identity_unlocked",
+                format!(
+                    "character {character_id} is not identity-locked;                      reaction detail work waits for the lock (D-1410)"
+                ),
+            ));
+        }
+        let name = format!("reaction-{character_id}-{emotion}");
+        let file = self.narrative_file(&project_id, &name);
+        self.refuse_if_frozen_file(&project_id, &file)?;
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("reaction {emotion} for {character_id} already exists"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let record = json!({
+            "record_type": "meister_reaction",
+            "schema_version": 1,
+            "project_id": project_id,
+            "character_id": character_id,
+            "emotion": emotion,
+            "envelope": envelope,
+            "posture": posture,
+            "gesture": gesture,
+            "stance": stance,
+            "conditions": args.get("conditions").cloned().unwrap_or(json!({})),
+            "status": "candidate",
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({
+                "character_id": character_id,
+                "emotion": emotion,
+                "status": "candidate",
+            }),
+        })
+    }
+
+    /// `meister_story_define` (NAR-03).
+    pub fn define_story(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_define_story(args))
+    }
+
+    fn plan_define_story(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let arc_id = arg_id(args, "arc_id")?;
+        self.read_project(&project_id)?;
+        let beats = args
+            .get("beats")
+            .and_then(Value::as_array)
+            .ok_or_else(|| StoreError::invalid_record("beats must be an array"))?
+            .clone();
+        let flags = self.declared_flags(&project_id)?;
+        validate_story_beats(self, &project_id, &beats, &flags)?;
+        let unlock = validate_unlock(args, &flags)?;
+        let file = self.narrative_file(&project_id, &arc_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("story arc {arc_id} already exists in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let beat_count = beats.len();
+        let record = json!({
+            "record_type": "meister_story_arc",
+            "schema_version": 1,
+            "project_id": project_id,
+            "arc_id": arc_id,
+            "envelope": envelope,
+            "status": "candidate",
+            "unit_state": "ungated",
+            "unlock": unlock,
+            "beats": beats,
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({"arc_id": arc_id, "beat_count": beat_count}),
+        })
+    }
+
+    /// `meister_playtest_generate` (NAR-06): a deterministic,
+    /// bounded traversal of one authored graph (a dialogue or
+    /// a story arc). Playthroughs are the distinct
+    /// root-to-ending paths; endings never reached are
+    /// reported by id — coverage is never asserted beyond
+    /// what the traversal observed. A node already on the
+    /// current path ends that branch (cycles cannot loop).
+    /// Bounds: at most 10,000 playthroughs and 4,096 steps
+    /// per path; a bound hit is reported with the coverage
+    /// gathered so far. A graph over the node bound is
+    /// refused before traversal (`playtest_bound_exceeded`).
+    /// Mark a traversed unit gated with the run that gated
+    /// it (FRZ-03). A sealed unit does not transition; an
+    /// already-gated unit keeps its first run id.
+    fn mark_unit_gated(&self, project_id: &str, graph_ref: &str, run_id: &str) -> StoreResult<()> {
+        let file = self.narrative_file(project_id, graph_ref);
+        let run_id = run_id.to_string();
+        self.mutate(|| {
+            let raw =
+                fs::read_to_string(&file).map_err(|e| StoreError::io(format!("read unit: {e}")))?;
+            let mut record: Value = serde_json::from_str(&raw)
+                .map_err(|e| StoreError::invalid_record(format!("unit record: {e}")))?;
+            if record["unit_state"].as_str() == Some("gated") {
+                return Ok(Planned {
+                    write: None,
+                    body: json!({}),
+                });
+            }
+            record["unit_state"] = json!("gated");
+            record["gated_run_id"] = json!(run_id);
+            Ok(Planned {
+                write: Some((file.clone(), record)),
+                body: json!({}),
+            })
+        })?;
+        Ok(())
+    }
+
+    pub fn generate_playtest(&self, args: &Value) -> StoreResult<Value> {
+        let project_id = arg_id(args, "project_id")?;
+        let graph_ref = arg_id(args, "graph_ref")?;
+        self.read_project(&project_id)?;
+        let file = self.narrative_file(&project_id, &graph_ref);
+        let raw = fs::read_to_string(&file).map_err(|_| {
+            StoreError::new(
+                "not_found",
+                format!("graph {graph_ref} not found in {project_id}"),
+            )
+        })?;
+        let record: Value = serde_json::from_str(&raw)
+            .map_err(|e| StoreError::invalid_record(format!("graph record: {e}")))?;
+        let nodes = match record["record_type"].as_str() {
+            Some("meister_dialogue") => dialogue_nodes(&record),
+            Some("meister_story_arc") => story_nodes(&record),
+            _ => {
+                return Err(StoreError::new(
+                    "not_found",
+                    format!("{graph_ref} is not a dialogue or story arc"),
+                ));
+            }
+        };
+        if nodes.len() > crate::graph::MAX_NODES {
+            return Err(StoreError::new(
+                "playtest_bound_exceeded",
+                format!(
+                    "graph has {} nodes; the bound is {}",
+                    nodes.len(),
+                    crate::graph::MAX_NODES
+                ),
+            ));
+        }
+        if nodes.is_empty() {
+            return Err(StoreError::invalid_record("the graph has no nodes"));
+        }
+        let index: std::collections::HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.as_str(), i))
+            .collect();
+        let mut endings_reached: Vec<String> = Vec::new();
+        let mut playthroughs = 0usize;
+        let mut bound_hit = false;
+        // Iterative DFS; each stack entry is (node, next edge
+        // index). `path` is the current node chain; a node
+        // already on it ends the branch.
+        let mut path: Vec<usize> = vec![0];
+        let mut cursor: Vec<usize> = vec![0];
+        let mut done = false;
+        while !done {
+            let top = *path.last().unwrap();
+            let node = &nodes[top];
+            if node.ending {
+                playthroughs += 1;
+                if !endings_reached.contains(&node.id) {
+                    endings_reached.push(node.id.clone());
+                }
+                if playthroughs >= 10_000 {
+                    bound_hit = true;
+                    break;
+                }
+                path.pop();
+                cursor.pop();
+                if path.is_empty() {
+                    done = true;
+                }
+                continue;
+            }
+            let edge_idx = *cursor.last().unwrap();
+            if edge_idx >= node.edges.len() || path.len() > 4096 {
+                if path.len() > 4096 {
+                    bound_hit = true;
+                }
+                path.pop();
+                cursor.pop();
+                if path.is_empty() {
+                    done = true;
+                }
+                continue;
+            }
+            *cursor.last_mut().unwrap() += 1;
+            let target = &node.edges[edge_idx];
+            if let Some(&ti) = index.get(target.as_str()) {
+                if path.contains(&ti) {
+                    continue; // cycle: this branch ends here
+                }
+                path.push(ti);
+                cursor.push(0);
+            }
+        }
+        endings_reached.sort();
+        let mut endings_unreached: Vec<String> = nodes
+            .iter()
+            .filter(|n| n.ending && !endings_reached.contains(&n.id))
+            .map(|n| n.id.clone())
+            .collect();
+        endings_unreached.sort();
+        let run_id = format!(
+            "pt-{}",
+            &sha256_hex(
+                canonical_json(&json!({
+                    "project_id": project_id,
+                    "graph_ref": graph_ref,
+                    "playthroughs": playthroughs,
+                    "endings_reached": endings_reached,
+                }))
+                .as_bytes()
+            )[..12]
+        );
+        // FRZ-03: a successful traversal gates an ungated
+        // unit (a sealed unit does not transition).
+        let frozen = record["envelope"]["record_id"]
+            .as_str()
+            .is_some_and(|id| self.is_frozen(&project_id, id));
+        if !frozen && record["unit_state"].as_str() != Some("gated") {
+            self.mark_unit_gated(&project_id, &graph_ref, &run_id)?;
+        }
+        Ok(json!({
+            "project_id": project_id,
+            "graph_ref": graph_ref,
+            "playthroughs": playthroughs,
+            "endings_reached": endings_reached.len(),
+            "endings_reached_ids": endings_reached,
+            "endings_unreached": endings_unreached,
+            "bound_hit": bound_hit,
+            "run_id": run_id,
+        }))
+    }
+
+    /// Find one record in a project by its envelope
+    /// record_id, scanning the project record and every
+    /// record family. Returns the record.
+    fn find_record_by_id(&self, project_id: &str, record_id: &str) -> Option<Value> {
+        let project = self.read_project(project_id).ok()?;
+        if project["envelope"]["record_id"].as_str() == Some(record_id) {
+            return Some(project);
+        }
+        for dir in RECORD_DIRS {
+            for (_, record) in self
+                .read_family_records(project_id, dir)
+                .unwrap_or_default()
+            {
+                if record["envelope"]["record_id"].as_str() == Some(record_id) {
+                    return Some(record);
+                }
+            }
+        }
+        None
+    }
+
+    /// The latest ruling standing on each subject record_id,
+    /// by verdict sequence (FRZ-01/FRZ-02): later rulings
+    /// supersede earlier ones, so a thaw is a later
+    /// send_back or quarantine on the same subject.
+    fn latest_rulings(&self, project_id: &str) -> std::collections::BTreeMap<String, String> {
+        let mut verdicts = self
+            .read_family_records(project_id, "verdicts")
+            .unwrap_or_default();
+        verdicts.sort_by_key(|(_, v)| v["seq"].as_u64().unwrap_or(0));
+        let mut map = std::collections::BTreeMap::new();
+        for (_, verdict) in verdicts {
+            if let (Some(ruling), Some(subjects)) =
+                (verdict["ruling"].as_str(), verdict["subjects"].as_array())
+            {
+                for subject in subjects {
+                    if let Some(id) = subject["record_id"].as_str() {
+                        map.insert(id.to_string(), ruling.to_string());
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    /// Whether a record currently stands frozen: the latest
+    /// ruling on it is `adopt` (FRZ-02).
+    fn is_frozen(&self, project_id: &str, record_id: &str) -> bool {
+        self.latest_rulings(project_id)
+            .get(record_id)
+            .map(String::as_str)
+            == Some("adopt")
+    }
+
+    /// Refuse when the given record stands frozen.
+    fn assert_not_frozen(&self, project_id: &str, record: &Value) -> StoreResult<()> {
+        if let Some(record_id) = record["envelope"]["record_id"].as_str()
+            && self.is_frozen(project_id, record_id)
+        {
+            return Err(StoreError::new(
+                "frozen_record",
+                format!(
+                    "record {record_id} stands adopted by verdict and is frozen; \
+                     a later verdict must thaw it before any edit"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse when the record already stored at `file`
+    /// stands frozen (the define-path half of FRZ-02: a
+    /// frozen record answers frozen_record, not conflict).
+    fn refuse_if_frozen_file(&self, project_id: &str, file: &Path) -> StoreResult<()> {
+        if file.exists()
+            && let Ok(raw) = fs::read_to_string(file)
+            && let Ok(record) = serde_json::from_str::<Value>(&raw)
+        {
+            self.assert_not_frozen(project_id, &record)?;
+        }
+        Ok(())
+    }
+
+    pub fn record_verdict(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_record_verdict(args))
+    }
+
+    /// `meister_verdict_record` (FRZ-01): record an Owner
+    /// ruling on a numbered verdict pack. Each subject is
+    /// pinned by record id and by the record's CURRENT
+    /// canonical hash — a pack assembled against an older
+    /// state of a subject is refused
+    /// (`verdict_hash_mismatch`), never silently re-pointed.
+    /// The server records rulings; it never authors them.
+    fn plan_record_verdict(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let pack_id = arg_id(args, "pack_id")?;
+        let decision_ref = req_text(args, "decision_ref", MAX_NAME_CHARS)?;
+        let ruling = req_text(args, "ruling", MAX_ID_CHARS)?;
+        if !["adopt", "send_back", "quarantine"].contains(&ruling.as_str()) {
+            return Err(StoreError::invalid(format!(
+                "ruling must be adopt, send_back or quarantine, not {ruling}"
+            )));
+        }
+        let subjects = args
+            .get("subjects")
+            .and_then(Value::as_array)
+            .ok_or_else(|| StoreError::invalid_record("subjects must be an array"))?;
+        if subjects.is_empty() {
+            return Err(StoreError::invalid_record(
+                "a verdict needs at least one subject",
+            ));
+        }
+        if subjects.len() > MAX_CHAIN_ENTRIES {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!(
+                    "{} subjects exceeds the bound of {MAX_CHAIN_ENTRIES}",
+                    subjects.len()
+                ),
+            ));
+        }
+        self.read_project(&project_id)?;
+        let mut pinned = Vec::new();
+        for subject in subjects {
+            let record_id = req_text(subject, "record_id", MAX_NAME_CHARS)?;
+            let sha = req_text(subject, "sha256", MAX_ID_CHARS)?;
+            if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(StoreError::invalid_record(format!(
+                    "subject {record_id}: sha256 must be 64 hex characters"
+                )));
+            }
+            let record = self
+                .find_record_by_id(&project_id, &record_id)
+                .ok_or_else(|| {
+                    StoreError::new(
+                        "subject_unknown",
+                        format!("no record {record_id} in {project_id}"),
+                    )
+                })?;
+            let current = record_hash(&record);
+            if current != sha.to_lowercase() {
+                return Err(StoreError::new(
+                    "verdict_hash_mismatch",
+                    format!(
+                        "subject {record_id}: the pack pins {sha} but the record now hashes {current}"
+                    ),
+                ));
+            }
+            pinned.push(json!({"record_id": record_id, "sha256": current}));
+        }
+        let dir = self.project_dir(&project_id).join("verdicts");
+        let file = dir.join(format!("{pack_id}.json"));
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("verdict pack {pack_id} already recorded in {project_id}"),
+            ));
+        }
+        let seq = self.read_family_records(&project_id, "verdicts")?.len() + 1;
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let notes = args.get("notes").and_then(Value::as_str).unwrap_or("");
+        let record = json!({
+            "record_type": "meister_verdict",
+            "schema_version": 1,
+            "project_id": project_id,
+            "pack_id": pack_id,
+            "decision_ref": decision_ref,
+            "ruling": ruling,
+            "subjects": pinned,
+            "notes": notes,
+            "seq": seq,
+            "envelope": envelope,
+            "status": "recorded",
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({
+                "project_id": project_id,
+                "pack_id": pack_id,
+                "ruling": ruling,
+                "subjects": pinned.len(),
+                "seq": seq,
+            }),
+        })
+    }
+
+    /// The project's lifecycle state, DERIVED at read from
+    /// what the store holds (FRZ-04) — never a stored field,
+    /// so no transition can occur without its event:
+    /// scaffolded (project record only), authoring (content,
+    /// nothing frozen, no emissions), frozen_slice (at
+    /// least one subject stands adopted), emitted (at
+    /// least one emission recorded).
+    fn project_lifecycle(&self, project_id: &str) -> StoreResult<String> {
+        if !self
+            .read_family_records(project_id, "emissions")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Ok("emitted".to_string());
+        }
+        if self
+            .latest_rulings(project_id)
+            .values()
+            .any(|r| r == "adopt")
+        {
+            return Ok("frozen_slice".to_string());
+        }
+        for dir in ["cast", "systems", "scenes", "levels", "narrative"] {
+            if !self
+                .read_family_records(project_id, dir)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                return Ok("authoring".to_string());
+            }
+        }
+        Ok("scaffolded".to_string())
+    }
+
+    /// Effective unit states across the project's scenes,
+    /// levels, dialogues and story arcs (FRZ-03): sealed
+    /// when the unit stands adopted, else its stored
+    /// unit_state (default ungated).
+    fn unit_state_counts(&self, project_id: &str) -> Value {
+        let rulings = self.latest_rulings(project_id);
+        let mut counts = std::collections::BTreeMap::from([
+            ("ungated", 0usize),
+            ("gated", 0usize),
+            ("sealed", 0usize),
+        ]);
+        for dir in ["scenes", "levels", "narrative"] {
+            for (_, record) in self
+                .read_family_records(project_id, dir)
+                .unwrap_or_default()
+            {
+                if !matches!(
+                    record["record_type"].as_str(),
+                    Some(
+                        "meister_scene"
+                            | "meister_level"
+                            | "meister_dialogue"
+                            | "meister_story_arc"
+                    )
+                ) {
+                    continue;
+                }
+                let state = match record["envelope"]["record_id"].as_str() {
+                    Some(id) if rulings.get(id).map(String::as_str) == Some("adopt") => "sealed",
+                    _ => match record["unit_state"].as_str() {
+                        Some("gated") => "gated",
+                        _ => "ungated",
+                    },
+                };
+                *counts.get_mut(state).unwrap() += 1;
+            }
+        }
+        json!({
+            "ungated": counts["ungated"],
+            "gated": counts["gated"],
+            "sealed": counts["sealed"],
+        })
+    }
+
+    /// `meister_emit` (EMT-01): emit frozen records through
+    /// a named emitter into a directory under the configured
+    /// emit root. Every validation completes before any file
+    /// is written; the run then writes its files, an
+    /// emit-manifest.json (one SHA-256 per file plus the
+    /// subject-set hash), and an emission record in the
+    /// store. A second identical emit is byte-identical. A
+    /// target holding files Meister did not write is refused
+    /// (`emit_conflict`). Emit never touches git.
+    pub fn emit(&self, args: &Value) -> StoreResult<Value> {
+        let project_id = arg_id(args, "project_id")?;
+        let emitter = req_text(args, "emitter", MAX_ID_CHARS)?;
+        let out_dir_arg = req_text(args, "out_dir", MAX_PATH_CHARS)?;
+        let subject_args = args
+            .get("subjects")
+            .and_then(Value::as_array)
+            .ok_or_else(|| StoreError::invalid_record("subjects must be an array"))?;
+        if subject_args.is_empty() {
+            return Err(StoreError::new(
+                "subject_empty",
+                "an emit needs at least one subject",
+            ));
+        }
+        if subject_args.len() > MAX_CHAIN_ENTRIES {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!(
+                    "{} subjects exceeds the bound of {MAX_CHAIN_ENTRIES}",
+                    subject_args.len()
+                ),
+            ));
+        }
+        let mut subject_ids: Vec<String> = Vec::new();
+        for subject in subject_args {
+            let id = subject
+                .as_str()
+                .ok_or_else(|| StoreError::invalid_record("subjects must be record id strings"))?;
+            subject_ids.push(id.to_string());
+        }
+        self.read_project(&project_id)?;
+        if !EMITTERS.contains(&emitter.as_str()) {
+            return Err(StoreError::new(
+                "emitter_unknown",
+                format!("no emitter named {emitter} in this build"),
+            ));
+        }
+        let root = self.emit_root.clone().ok_or_else(|| {
+            StoreError::new(
+                "emit_path_refused",
+                "no emit root is configured (MEISTER_EMIT_ROOT)",
+            )
+        })?;
+        if !root.is_dir() {
+            return Err(StoreError::new(
+                "emit_path_refused",
+                format!("emit root {} does not exist", root.display()),
+            ));
+        }
+        let root_canon = fs::canonicalize(&root)
+            .map_err(|e| StoreError::io(format!("canonicalize emit root: {e}")))?;
+        // Resolve the target under the root; traversal out
+        // of it is refused before anything is created.
+        let out_path = PathBuf::from(&out_dir_arg);
+        if out_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(StoreError::new(
+                "emit_path_refused",
+                "out_dir may not contain .. components",
+            ));
+        }
+        let target = if out_path.is_absolute() {
+            if !out_path.starts_with(&root_canon) {
+                return Err(StoreError::new(
+                    "emit_path_refused",
+                    "an absolute out_dir must sit under the emit root",
+                ));
+            }
+            out_path
+        } else {
+            root_canon.join(&out_path)
+        };
+        // Every subject resolves and stands frozen.
+        let mut records: Vec<(String, Value)> = Vec::new();
+        for id in &subject_ids {
+            let record = self.find_record_by_id(&project_id, id).ok_or_else(|| {
+                StoreError::new("subject_unknown", format!("no record {id} in {project_id}"))
+            })?;
+            if !self.is_frozen(&project_id, id) {
+                return Err(StoreError::new(
+                    "subject_unfrozen",
+                    format!("subject {id} does not stand adopted; emit takes frozen records only"),
+                ));
+            }
+            records.push((id.clone(), record));
+        }
+        let mut sorted_ids = subject_ids.clone();
+        sorted_ids.sort();
+        let set_hash = sha256_hex(
+            canonical_json(&json!({"emitter": emitter, "subjects": sorted_ids})).as_bytes(),
+        );
+        // A target holding foreign files is refused; a
+        // target holding OUR manifest for the same emitter
+        // and subject set may be re-emitted identically.
+        // Collect first, decide after: directory order is
+        // not an input to the verdict.
+        if target.is_dir() {
+            let mut names: Vec<String> = Vec::new();
+            let mut manifest_ok = false;
+            let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for entry in fs::read_dir(&target)
+                .map_err(|e| StoreError::io(format!("read emit target: {e}")))?
+            {
+                let entry = entry.map_err(|e| StoreError::io(format!("emit target: {e}")))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                names.push(name.clone());
+                if name == "emit-manifest.json" {
+                    let raw = fs::read_to_string(entry.path())
+                        .map_err(|e| StoreError::io(format!("read manifest: {e}")))?;
+                    let manifest: Value = serde_json::from_str(&raw).map_err(|_| {
+                        StoreError::new(
+                            "emit_conflict",
+                            "the target's emit-manifest.json is not readable as a manifest",
+                        )
+                    })?;
+                    if manifest["subject_set_hash"].as_str() == Some(set_hash.as_str())
+                        && manifest["emitter"].as_str() == Some(emitter.as_str())
+                    {
+                        manifest_ok = true;
+                        if let Some(list) = manifest["files"].as_array() {
+                            for f in list {
+                                if let Some(path) = f["path"].as_str() {
+                                    known
+                                        .insert(path.split('/').next().unwrap_or(path).to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let foreign = !names.is_empty()
+                && (!manifest_ok
+                    || names
+                        .iter()
+                        .any(|n| n != "emit-manifest.json" && !known.contains(n)));
+            if foreign {
+                return Err(StoreError::new(
+                    "emit_conflict",
+                    "the target holds files Meister did not write for this emitter and subject set",
+                ));
+            }
+        }
+        let files = self.render_emission(&emitter, &project_id, &records, &set_hash)?;
+        fs::create_dir_all(&target)
+            .map_err(|e| StoreError::io(format!("create emit target: {e}")))?;
+        let target_canon = fs::canonicalize(&target)
+            .map_err(|e| StoreError::io(format!("canonicalize emit target: {e}")))?;
+        if !target_canon.starts_with(&root_canon) {
+            return Err(StoreError::new(
+                "emit_path_refused",
+                "the emit target escapes the emit root",
+            ));
+        }
+        let mut manifest_files = Vec::new();
+        for (rel, content) in &files {
+            let dest = target.join(rel);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| StoreError::io(format!("create emit subdir: {e}")))?;
+            }
+            fs::write(&dest, content)
+                .map_err(|e| StoreError::io(format!("write emitted file: {e}")))?;
+            manifest_files.push(json!({
+                "path": rel,
+                "sha256": sha256_hex(content.as_bytes()),
+            }));
+        }
+        let manifest = json!({
+            "emitter": emitter,
+            "subject_set_hash": set_hash,
+            "subjects": sorted_ids,
+            "files": manifest_files,
+        });
+        fs::write(
+            target.join("emit-manifest.json"),
+            format!("{}\n", canonical_json(&manifest)),
+        )
+        .map_err(|e| StoreError::io(format!("write emit manifest: {e}")))?;
+        // Record the emission in the store (idempotent per
+        // subject set).
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let file_count = files.len();
+        let out_display = target.display().to_string();
+        let body = self.mutate(|| {
+            let envelope = envelope.clone();
+            let sorted_ids = sorted_ids.clone();
+            let out_display = out_display.clone();
+            let file = self
+                .project_dir(&project_id)
+                .join("emissions")
+                .join(format!("emit-{}.json", &set_hash[..12]));
+            if file.exists() {
+                return Ok(Planned {
+                    write: None,
+                    body: json!({
+                        "project_id": project_id,
+                        "emitter": emitter,
+                        "file_count": file_count,
+                        "out_dir": out_display,
+                        "subject_set_hash": set_hash,
+                    }),
+                });
+            }
+            let record = json!({
+                "record_type": "meister_emission",
+                "schema_version": 1,
+                "project_id": project_id,
+                "emitter": emitter,
+                "subjects": sorted_ids,
+                "out_dir": out_display,
+                "subject_set_hash": set_hash,
+                "envelope": envelope,
+                "status": "emitted",
+            });
+            Ok(Planned {
+                write: Some((file, record)),
+                body: json!({
+                    "project_id": project_id,
+                    "emitter": emitter,
+                    "file_count": file_count,
+                    "out_dir": out_display,
+                    "subject_set_hash": set_hash,
+                }),
+            })
+        })?;
+        Ok(body)
+    }
+
+    /// Render one emission's files (path, content) without
+    /// writing anything.
+    fn render_emission(
+        &self,
+        emitter: &str,
+        project_id: &str,
+        records: &[(String, Value)],
+        set_hash: &str,
+    ) -> StoreResult<Vec<(String, String)>> {
+        let mut modules: Vec<(String, String, String)> = records
+            .iter()
+            .map(|(_, record)| content_module(emitter, set_hash, record))
+            .collect();
+        modules.sort();
+        match emitter {
+            "bevy-rust-content/1" => {
+                let mut files: Vec<(String, String)> = modules
+                    .iter()
+                    .map(|(module, _, body)| (format!("{module}.rs"), body.clone()))
+                    .collect();
+                let mut lib = format!(
+                    "//! Generated by meister_emit (emitter bevy-rust-content/1). Do not edit by hand.
+//! Subject set: {set_hash}
+
+"
+                );
+                for (module, _, _) in &modules {
+                    lib.push_str(&format!("pub mod {module};\n"));
+                }
+                files.push(("lib.rs".to_string(), lib));
+                Ok(files)
+            }
+            "bevy-shell/1" => {
+                let package = project_id.replace('-', "_");
+                let mut files: Vec<(String, String)> = Vec::new();
+                files.push((
+                    "Cargo.toml".to_string(),
+                    format!(
+                        "# Generated by meister_emit (emitter bevy-shell/1).
+[package]
+name = \"{package}\"
+version = \"0.1.0\"
+edition = \"2024\"
+
+[dependencies]
+# The estate engine line is Bevy 0.20 (the Niflheim
+# build pins it); the shell's content modules are
+# engine-neutral data and compile without it.
+"
+                    ),
+                ));
+                files.push((
+                    "rust-toolchain.toml".to_string(),
+                    "# The estate nightly pin (the meister repo's own rust-toolchain.toml).
+[toolchain]
+channel = \"nightly-2026-10-30\"
+"
+                    .to_string(),
+                ));
+                let mut mod_rs = String::new();
+                for (module, _, _) in &modules {
+                    mod_rs.push_str(&format!("pub mod {module};\n"));
+                }
+                mod_rs.push_str(&format!(
+                    "\npub const RECORD_COUNT: usize = {};\n",
+                    modules.len()
+                ));
+                files.push(("src/content/mod.rs".to_string(), mod_rs));
+                for (module, _, body) in &modules {
+                    files.push((format!("src/content/{module}.rs"), body.clone()));
+                }
+                files.push((
+                    "src/main.rs".to_string(),
+                    format!(
+                        "//! Generated shell for {project_id} (emitter bevy-shell/1).\n\n#[allow(dead_code)]\nmod content;\n\nfn main() {{\n    println!(\"{project_id}: {{}} frozen content records\", content::RECORD_COUNT);\n}}\n"
+                    ),
+                ));
+                Ok(files)
+            }
+            _ => Err(StoreError::new(
+                "emitter_unknown",
+                format!("no emitter named {emitter} in this build"),
+            )),
+        }
     }
 
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
@@ -1703,12 +3103,14 @@ impl Census {
         }
         let systems = store.read_system_records(project_id)?;
         let mut census_extra = systems.clone();
-        for family in ["scenes", "levels"] {
+        for family in ["scenes", "levels", "narrative"] {
             census_extra.extend(store.read_family_records(project_id, family)?);
         }
         let (references, duplicate_ids) =
             census_references(&mut b, store, project_id, &project, &cast, &census_extra);
         census_systems(&mut b, &project_dir, &systems);
+        let (sanitization_hits, differentiation) =
+            census_narrative_checks(&mut b, store, project_id, &project_dir, &cast)?;
         let stale_reason = staleness(&state_hash, &store.state_hash(project_id)?, prior);
         let stale = stale_reason.is_some();
         let stale_reason = stale_reason.unwrap_or_default();
@@ -1737,7 +3139,10 @@ impl Census {
                 "references_checked": references,
                 "duplicate_record_ids": duplicate_ids,
                 "system_records": systems.len(),
+                "sanitization_hits": sanitization_hits,
+                "unit_states": store.unit_state_counts(project_id),
             },
+            "differentiation": differentiation,
             "checks": b.checks,
             "failures": b.failures,
         });
@@ -1749,6 +3154,187 @@ impl Census {
             stale_reason,
         })
     }
+}
+
+/// NAR-05: sanitization and differentiation, as census claims
+/// and reports.
+///
+/// Sanitization: when the project carries a `denylist.json`
+/// record (`{terms: [...]}` — the teaching games' law: no
+/// studio name, no real project, no real person in shipped
+/// text), every shippable text field of the narrative records
+/// is scanned: dialogue line text and choice labels, story
+/// beat titles and quest titles. A hit is an unverified claim
+/// locating the field; the text is never silently edited.
+///
+/// Differentiation: for each cast pair, a shared display name
+/// is a collision outright (an unverified claim); descriptor
+/// overlap is reported as a Jaccard number in the body — the
+/// machine reports, the Owner decides.
+fn census_narrative_checks(
+    b: &mut CensusBuilder,
+    store: &Store,
+    project_id: &str,
+    project_dir: &Path,
+    cast: &[Value],
+) -> StoreResult<(usize, Vec<Value>)> {
+    let mut hits = 0usize;
+    let denylist_path = project_dir.join("denylist.json");
+    if denylist_path.exists() {
+        let raw = fs::read_to_string(&denylist_path)
+            .map_err(|e| StoreError::io(format!("denylist unreadable: {e}")))?;
+        let parsed: Value = serde_json::from_str(&raw).map_err(|e| {
+            StoreError::invalid_record(format!("denylist record does not parse: {e}"))
+        })?;
+        let terms: Vec<String> = parsed
+            .get("terms")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|t| t.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !terms.is_empty() {
+            for (rel, record) in store.read_family_records(project_id, "narrative")? {
+                let mut fields: Vec<(String, String)> = Vec::new();
+                if record.get("record_type").and_then(Value::as_str) == Some("meister_dialogue")
+                    && let Some(lines) = record.get("lines").and_then(Value::as_array)
+                {
+                    for (i, line) in lines.iter().enumerate() {
+                        if let Some(text) = line.get("text").and_then(Value::as_str) {
+                            fields.push((format!("lines[{i}].text"), text.to_string()));
+                        }
+                        if let Some(choices) = line.get("choices").and_then(Value::as_array) {
+                            for (j, choice) in choices.iter().enumerate() {
+                                if let Some(label) = choice.get("label").and_then(Value::as_str) {
+                                    fields.push((
+                                        format!("lines[{i}].choices[{j}].label"),
+                                        label.to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                if record.get("record_type").and_then(Value::as_str) == Some("meister_story_arc")
+                    && let Some(beats) = record.get("beats").and_then(Value::as_array)
+                {
+                    for (i, beat) in beats.iter().enumerate() {
+                        if let Some(title) = beat.get("title").and_then(Value::as_str) {
+                            fields.push((format!("beats[{i}].title"), title.to_string()));
+                        }
+                        if let Some(quests) = beat.get("quests").and_then(Value::as_array) {
+                            for (j, quest) in quests.iter().enumerate() {
+                                if let Some(title) = quest.get("title").and_then(Value::as_str) {
+                                    fields.push((
+                                        format!("beats[{i}].quests[{j}].title"),
+                                        title.to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                for (field, text) in &fields {
+                    let lowered = text.to_lowercase();
+                    for term in &terms {
+                        if lowered.contains(term.as_str()) {
+                            hits += 1;
+                            b.check(Claim {
+                                id: format!("sanitize:{rel}:{field}"),
+                                subject: rel.clone(),
+                                claim: "sanitization_hit: shipped text carries no denylisted term"
+                                    .to_string(),
+                                value: json!(term),
+                                source_artifact: "denylist.json".to_string(),
+                                source_sha256: None,
+                                verified: false,
+                                detail: format!(
+                                    "denylisted term {term:?} found at {field} of {rel}"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Differentiation over cast pairs.
+    let descriptors = |record: &Value| -> Vec<String> {
+        let identity = &record["identity"];
+        if let Some(list) = identity.get("descriptors").and_then(Value::as_array) {
+            return list
+                .iter()
+                .filter_map(|d| d.as_str().map(|d| d.to_lowercase()))
+                .collect();
+        }
+        let mut tokens: Vec<String> = Vec::new();
+        for key in ["display_name", "role"] {
+            if let Some(text) = identity.get(key).and_then(Value::as_str) {
+                for token in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+                    if !token.is_empty() {
+                        tokens.push(token.to_string());
+                    }
+                }
+            }
+        }
+        tokens.sort();
+        tokens.dedup();
+        tokens
+    };
+    let mut pairs: Vec<Value> = Vec::new();
+    for i in 0..cast.len() {
+        for j in (i + 1)..cast.len() {
+            let (a, b_rec) = (&cast[i], &cast[j]);
+            let a_id = a["character_id"].as_str().unwrap_or_default().to_string();
+            let b_id = b_rec["character_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let a_name = a["identity"]["display_name"]
+                .as_str()
+                .unwrap_or(&a_id)
+                .to_lowercase();
+            let b_name = b_rec["identity"]["display_name"]
+                .as_str()
+                .unwrap_or(&b_id)
+                .to_lowercase();
+            let collision = a_name == b_name;
+            if collision {
+                b.check(Claim {
+                    id: format!("differentiation:{a_id}:{b_id}"),
+                    subject: a_id.clone(),
+                    claim: "differentiation_collision: cast display names are distinct".to_string(),
+                    value: json!(a_name),
+                    source_artifact: format!("cast/{b_id}.json"),
+                    source_sha256: None,
+                    verified: false,
+                    detail: format!(
+                        "cast members {a_id} and {b_id} share the display name {a_name:?}"
+                    ),
+                });
+            }
+            let da = descriptors(a);
+            let db = descriptors(b_rec);
+            let set_a: std::collections::BTreeSet<&String> = da.iter().collect();
+            let set_b: std::collections::BTreeSet<&String> = db.iter().collect();
+            let shared = set_a.intersection(&set_b).count();
+            let union = set_a.union(&set_b).count();
+            let overlap = if union == 0 {
+                0.0
+            } else {
+                (shared as f64 / union as f64 * 1000.0).round() / 1000.0
+            };
+            pairs.push(json!({
+                "a": a_id,
+                "b": b_id,
+                "name_collision": collision,
+                "descriptor_overlap": overlap,
+            }));
+        }
+    }
+    Ok((hits, pairs))
 }
 
 /// One reference-resolution claim (STORE-03, `canon_orphan`).
@@ -2564,6 +4150,155 @@ fn descent_violation(message: String) -> StoreError {
 ///
 /// Bounds (floors ≤ 64, chambers ≤ 64 per floor, doors ≤ 128
 /// per floor) and the `descent_violation` code are the plan's
+/// NAR-04: the level's narrative half. Trigger `dialogue`
+/// fields name authored dialogues; `layout.narrative` composes
+/// chambers with scene and dialogue records; `layout.encounters`
+/// places encounters in declared chambers against declared
+/// systems. Every reference resolves or the compose refuses.
+fn validate_level_narrative(
+    store: &Store,
+    project_id: &str,
+    layout: &Value,
+    triggers: &[Value],
+) -> StoreResult<()> {
+    let dialogue_ids: Vec<String> = store
+        .read_family_records(project_id, "narrative")?
+        .into_iter()
+        .filter(|(_, r)| r.get("record_type").and_then(Value::as_str) == Some("meister_dialogue"))
+        .filter_map(|(_, r)| {
+            r.get("dialogue_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let scene_ids: Vec<String> = store
+        .read_family_records(project_id, "scenes")?
+        .into_iter()
+        .filter_map(|(_, r)| {
+            r.get("scene_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let system_ids: Vec<String> = store
+        .read_system_records(project_id)?
+        .into_iter()
+        .filter_map(|(_, r)| {
+            r.get("system_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    // floor_id -> chamber ids, from the layout itself.
+    let mut chambers_of: Vec<(String, Vec<String>)> = Vec::new();
+    if let Some(floors) = layout.get("floors").and_then(Value::as_array) {
+        for floor in floors {
+            let floor_id = floor
+                .get("floor_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let chambers = floor
+                .get("chambers")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_string))
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+            chambers_of.push((floor_id, chambers));
+        }
+    }
+    let chamber_known = |floor_id: &str, chamber: &str| -> bool {
+        chambers_of
+            .iter()
+            .any(|(f, cs)| f == floor_id && cs.iter().any(|c| c == chamber))
+    };
+    for trigger in triggers {
+        if let Some(d) = trigger.get("dialogue").filter(|v| !v.is_null()) {
+            let d = d.as_str().ok_or_else(|| {
+                StoreError::invalid_record("trigger dialogue must be a dialogue id string")
+            })?;
+            if !dialogue_ids.iter().any(|i| i == d) {
+                return Err(StoreError::new(
+                    "graph_dangling_ref",
+                    format!("trigger names undeclared dialogue {d}"),
+                ));
+            }
+        }
+    }
+    if let Some(narrative) = layout.get("narrative").filter(|v| !v.is_null()) {
+        let entries = narrative.as_array().ok_or_else(|| {
+            StoreError::invalid_record("layout narrative must be an array of chamber compositions")
+        })?;
+        for entry in entries {
+            let floor_id = req_text(entry, "floor_id", MAX_ID_CHARS)?;
+            let chamber = req_text(entry, "chamber", MAX_ID_CHARS)?;
+            if !chamber_known(&floor_id, &chamber) {
+                return Err(StoreError::new(
+                    "descent_violation",
+                    format!(
+                        "narrative composition names chamber {chamber}                          of undeclared floor {floor_id}"
+                    ),
+                ));
+            }
+            if let Some(s) = entry.get("scene_id") {
+                let s = s.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("composition scene_id must be a string")
+                })?;
+                if !scene_ids.iter().any(|i| i == s) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("composition names undeclared scene {s}"),
+                    ));
+                }
+            }
+            if let Some(d) = entry.get("dialogue_id") {
+                let d = d.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("composition dialogue_id must be a string")
+                })?;
+                if !dialogue_ids.iter().any(|i| i == d) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("composition names undeclared dialogue {d}"),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(encounters) = layout.get("encounters").filter(|v| !v.is_null()) {
+        let encounters = encounters
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("layout encounters must be an array"))?;
+        for encounter in encounters {
+            let id = req_text(encounter, "id", MAX_ID_CHARS)?;
+            let floor_id = req_text(encounter, "floor_id", MAX_ID_CHARS)?;
+            let chamber = req_text(encounter, "chamber", MAX_ID_CHARS)?;
+            if !chamber_known(&floor_id, &chamber) {
+                return Err(StoreError::new(
+                    "descent_violation",
+                    format!(
+                        "encounter {id} placed in chamber {chamber}                          of undeclared floor {floor_id}"
+                    ),
+                ));
+            }
+            if let Some(s) = encounter.get("system_id") {
+                let s = s.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("encounter system_id must be a string")
+                })?;
+                if !system_ids.iter().any(|i| i == s) {
+                    return Err(StoreError::new(
+                        "graph_dangling_ref",
+                        format!("encounter {id} names undeclared system {s}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// SYS-09 contract. Progression gates must name declared
 /// progression_dag systems and minigame placements declared
 /// minigame systems (the plan's SYS-09 references).
@@ -4164,14 +5899,112 @@ mod tests {
     }
 
     #[test]
-    fn adv_level_narrative_fields_wait_for_rung3() {
-        let (store, root, _source) = scaffolded("sys-descent-narrative");
+    fn level_with_narrative_composes() {
+        // NAR-04: dialogue at the camp (a chamber) and the
+        // stairs (a trigger), an encounter placed in a declared
+        // chamber — the narrative half is real at Rung 3.
+        let (store, root, source) = scaffolded("nar-compose");
+        store.add_cast(&cast_args(&source)).unwrap();
+        store
+            .author_dialogue(&json!({"envelope": envelope(), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "a", "speaker": "warden", "text": "Halt."}]}))
+            .unwrap();
         let mut layout = descent_layout();
-        layout["narrative"] = json!({"intro": "once upon a time"});
+        layout["narrative"] = json!([
+            {"floor_id": "floor-1", "chamber": "entry-hall",
+             "dialogue_id": "gate-words"}
+        ]);
+        layout["encounters"] = json!([
+            {"id": "e1", "floor_id": "floor-2", "chamber": "crypt"}
+        ]);
+        let mut args = level_args(layout);
+        args["triggers"] = json!([{"id": "t1", "dialogue": "gate-words"}]);
+        let body = store.compose_level(&args).unwrap();
+        assert_eq!(body["floor_count"], 3);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_level_undeclared_dialogue_link_is_refused() {
+        let (store, root, _source) = scaffolded("nar-compose-dangling");
+        let mut layout = descent_layout();
+        layout["narrative"] = json!([
+            {"floor_id": "floor-1", "chamber": "entry-hall",
+             "dialogue_id": "no-such-dialogue"}
+        ]);
         let err = store.compose_level(&level_args(layout)).unwrap_err();
-        assert_eq!(err.code, "not_implemented_until_rung3");
-        // The refusal wrote nothing.
-        assert!(!root.join("first-light/levels/the-descent.json").exists());
+        assert_eq!(err.code, "graph_dangling_ref");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_level_encounter_in_undeclared_room_is_refused() {
+        let (store, root, _source) = scaffolded("nar-compose-room");
+        let mut layout = descent_layout();
+        layout["encounters"] = json!([
+            {"id": "e1", "floor_id": "floor-1", "chamber": "nowhere"}
+        ]);
+        let err = store.compose_level(&level_args(layout)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn census_sanitization_hit_locates_the_field() {
+        let (store, root) = nar_store("san1");
+        store
+            .author_dialogue(&json!({"envelope": envelope(), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "a", "speaker": "warden",
+                           "text": "The Qompass gate stands."}]}))
+            .unwrap();
+        fs::write(
+            root.join("first-light/denylist.json"),
+            "{\"terms\": [\"qompass\"]}",
+        )
+        .unwrap();
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        assert_eq!(err.code, "canon_unverified");
+        let body = err.census.expect("census body rides the refusal");
+        assert_eq!(body["counts"]["sanitization_hits"], 1);
+        assert!(
+            body["failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap().contains("lines[0].text")),
+            "the hit locates its field: {body}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn census_differentiation_collision_and_overlap_report() {
+        let (store, root, source) = scaffolded("nar-diff");
+        store.add_cast(&cast_args(&source)).unwrap();
+        // A second member with the same display name.
+        let mut twin = cast_args(&source);
+        twin["character_id"] = json!("warden-twin");
+        twin["envelope"]["record_id"] = json!("rec-cast-twin");
+        store.add_cast(&twin).unwrap();
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("census body rides the refusal");
+        assert!(
+            body["failures"].as_array().unwrap().iter().any(|f| f
+                .as_str()
+                .unwrap()
+                .contains("differentiation:warden:warden-twin")),
+            "the collision is a named failure: {body}"
+        );
+        let pairs = body["differentiation"].as_array().unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0]["name_collision"], true);
+        assert_eq!(pairs[0]["descriptor_overlap"], 1.0);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4643,6 +6476,640 @@ mod tests {
                               "character_id": "warden", "identity": json!({})}))
             .unwrap_err();
         assert_eq!(err.code, "not_found");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- Rung 3: narrative (NAR-01..03) ----------
+
+    fn nar_store(tag: &str) -> (Store, PathBuf) {
+        let (store, root) = temp_store(&format!("nar-{tag}"));
+        let source = source_file(&root);
+        store.create_project(&create_args()).unwrap();
+        store
+            .define_system(&json!({"envelope": envelope(), "project_id": "first-light",
+            "system_id": "core-flags", "kind": "flags",
+            "spec": {"flags": [
+                {"id": "met-warden", "type": "bool", "initial": false},
+                {"id": "trust", "type": "int", "initial": 0, "min": 0, "max": 10}
+            ]}}))
+            .unwrap();
+        store.add_cast(&cast_args(&source)).unwrap();
+        (store, root)
+    }
+
+    fn dialogue_args(lines: Value) -> Value {
+        json!({"envelope": envelope(), "project_id": "first-light",
+               "dialogue_id": "gate-words", "lines": lines})
+    }
+
+    #[test]
+    fn dialogue_branching_round_trips_unchanged() {
+        let (store, _root) = nar_store("t0");
+        let lines = json!([
+            {"id": "open", "speaker": "warden", "text": "State your errand.",
+             "choices": [
+                 {"label": "Ask about the gate", "target": "gate"},
+                 {"label": "Leave", "target": "leave"}],
+             "effects": [{"flag": "met-warden", "set": true}]},
+            {"id": "gate", "speaker": "warden", "text": "It opens for the proven.",
+             "conditions": [{"flag": "met-warden", "equals": true}]},
+            {"id": "leave", "speaker": "warden", "text": "Then go."}
+        ]);
+        let body = store
+            .author_dialogue(&dialogue_args(lines.clone()))
+            .unwrap();
+        assert_eq!(body["line_count"], 3);
+        let back = store
+            .get_dialogue(&json!({"project_id": "first-light",
+                                   "dialogue_id": "gate-words"}))
+            .unwrap();
+        assert_eq!(back["lines"], lines, "the record round-trips unchanged");
+    }
+
+    #[test]
+    fn adv_dialogue_undeclared_flag_is_refused() {
+        let (store, _root) = nar_store("t1");
+        let err = store
+            .author_dialogue(&dialogue_args(json!([
+                {"id": "a", "speaker": "warden", "text": "Hi.",
+                 "conditions": [{"flag": "never-declared"}]}
+            ])))
+            .unwrap_err();
+        assert_eq!(err.code, "flag_undeclared");
+    }
+
+    #[test]
+    fn adv_dialogue_unknown_speaker_is_refused() {
+        let (store, _root) = nar_store("t2");
+        let err = store
+            .author_dialogue(&dialogue_args(json!([
+                {"id": "a", "speaker": "ghost", "text": "Boo."}
+            ])))
+            .unwrap_err();
+        assert_eq!(err.code, "speaker_unknown");
+    }
+
+    #[test]
+    fn adv_dialogue_over_line_bound_is_refused() {
+        let (store, _root) = nar_store("t3");
+        let lines: Vec<Value> = (0..2049)
+            .map(|i| json!({"id": format!("l{i}"), "speaker": "warden", "text": "x"}))
+            .collect();
+        let err = store
+            .author_dialogue(&dialogue_args(json!(lines)))
+            .unwrap_err();
+        assert_eq!(err.code, "bound_exceeded");
+    }
+
+    #[test]
+    fn adv_dialogue_loose_prose_is_refused() {
+        let (store, _root) = nar_store("t4");
+        let err = store
+            .author_dialogue(&dialogue_args(json!(["just some prose"])))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+    }
+
+    #[test]
+    fn reaction_locked_character_takes_a_profile() {
+        let (store, root) = nar_store("t5");
+        let source = source_file(&root);
+        store.lock_cast(&lock_args(&source)).unwrap();
+        let body = store
+            .set_reaction(&json!({"envelope": envelope(), "project_id": "first-light",
+                "character_id": "warden", "emotion": "defiance",
+                "posture": "weight back, chin up", "gesture": "hand off the hilt",
+                "stance": "feet planted wide"}))
+            .unwrap();
+        assert_eq!(body["status"], "candidate");
+    }
+
+    #[test]
+    fn adv_reaction_unlocked_character_is_refused() {
+        let (store, _root) = nar_store("t6");
+        let err = store
+            .set_reaction(&json!({"envelope": envelope(), "project_id": "first-light",
+                "character_id": "warden", "emotion": "defiance",
+                "posture": "weight back", "gesture": "hand off the hilt",
+                "stance": "feet planted"}))
+            .unwrap_err();
+        assert_eq!(err.code, "identity_unlocked");
+    }
+
+    #[test]
+    fn adv_reaction_unknown_character_is_refused() {
+        let (store, _root) = nar_store("t7");
+        let err = store
+            .set_reaction(&json!({"envelope": envelope(), "project_id": "first-light",
+                "character_id": "nobody", "emotion": "defiance",
+                "posture": "weight back", "gesture": "hand off the hilt",
+                "stance": "feet planted"}))
+            .unwrap_err();
+        assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn story_two_ending_arc_defines() {
+        let (store, _root) = nar_store("t8");
+        let body = store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+            "arc_id": "gate-arc",
+            "beats": [
+                {"id": "arrive", "choices": [
+                    {"label": "Prove", "target": "proven"},
+                    {"label": "Turn back", "target": "turned"}]},
+                {"id": "proven", "kind": "ending"},
+                {"id": "turned", "kind": "ending"}
+            ]}))
+            .unwrap();
+        assert_eq!(body["beat_count"], 3);
+    }
+
+    #[test]
+    fn adv_story_undeclared_scene_ref_is_refused() {
+        let (store, _root) = nar_store("t9");
+        let err = store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+                "arc_id": "gate-arc",
+                "beats": [{"id": "arrive", "refs": {"scenes": ["no-such-scene"]}}]}))
+            .unwrap_err();
+        assert_eq!(err.code, "graph_dangling_ref");
+    }
+
+    #[test]
+    fn adv_story_quest_undeclared_flag_is_refused() {
+        let (store, _root) = nar_store("t10");
+        let err = store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+                "arc_id": "gate-arc",
+                "beats": [{"id": "arrive", "quests": [
+                    {"id": "q1", "title": "Prove it", "objective_flag": "nope"}]}]}))
+            .unwrap_err();
+        assert_eq!(err.code, "flag_undeclared");
+    }
+
+    // ---------- NAR-06: playtest ----------
+
+    fn slice_store(tag: &str) -> (Store, PathBuf) {
+        let (store, root) = nar_store(tag);
+        store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+            "arc_id": "gate-arc",
+            "beats": [
+                {"id": "arrive", "choices": [
+                    {"label": "Prove", "target": "proven"},
+                    {"label": "Turn back", "target": "turned"}]},
+                {"id": "proven", "kind": "ending"},
+                {"id": "turned", "kind": "ending"}
+            ]}))
+            .unwrap();
+        (store, root)
+    }
+
+    #[test]
+    fn playtest_slice_reaches_every_ending() {
+        let (store, root) = slice_store("pt1");
+        let body = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "gate-arc"}))
+            .unwrap();
+        assert_eq!(body["playthroughs"], 2);
+        assert_eq!(body["endings_reached"], 2);
+        assert_eq!(body["endings_unreached"], json!([]));
+        assert_eq!(body["bound_hit"], false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playtest_twin_reports_the_unreached_ending_by_id() {
+        let (store, root) = nar_store("pt2");
+        store
+            .define_story(&json!({"envelope": envelope(), "project_id": "first-light",
+            "arc_id": "gate-arc",
+            "beats": [
+                {"id": "arrive", "choices": [
+                    {"label": "Prove", "target": "proven"}]},
+                {"id": "proven", "kind": "ending"},
+                {"id": "lost", "kind": "ending"}
+            ]}))
+            .unwrap();
+        let body = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "gate-arc"}))
+            .unwrap();
+        assert_eq!(body["playthroughs"], 1);
+        assert_eq!(body["endings_reached"], 1);
+        assert_eq!(body["endings_unreached"], json!(["lost"]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playtest_two_runs_are_byte_identical() {
+        let (store, root) = slice_store("pt3");
+        let args = json!({"project_id": "first-light", "graph_ref": "gate-arc"});
+        let a = store.generate_playtest(&args).unwrap();
+        let b = store.generate_playtest(&args).unwrap();
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playtest_cyclic_dialogue_terminates() {
+        let (store, root) = nar_store("pt4");
+        store
+            .author_dialogue(&json!({"envelope": envelope(), "project_id": "first-light",
+            "dialogue_id": "loop-words",
+            "lines": [
+                {"id": "a", "speaker": "warden", "text": "Again?",
+                 "choices": [
+                     {"label": "Loop", "target": "b"},
+                     {"label": "Stop", "target": "exit"}]},
+                {"id": "b", "speaker": "warden", "text": "And again?",
+                 "choices": [
+                     {"label": "Loop", "target": "a"},
+                     {"label": "Stop", "target": "exit"}]},
+                {"id": "exit", "speaker": "warden", "text": "Done."}
+            ]}))
+            .unwrap();
+        let body = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "loop-words"}))
+            .unwrap();
+        assert_eq!(body["playthroughs"], 2, "a->exit and a->b->exit: {body}");
+        assert_eq!(body["endings_reached"], 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_playtest_oversized_graph_is_refused_before_traversal() {
+        let (store, root) = nar_store("pt5");
+        // A hand-written record over the node bound (define
+        // would never admit it).
+        let beats: Vec<Value> = (0..513).map(|i| json!({"id": format!("b{i}")})).collect();
+        let record = json!({"record_type": "meister_story_arc",
+            "project_id": "first-light", "arc_id": "huge", "beats": beats});
+        fs::create_dir_all(root.join("first-light/narrative")).unwrap();
+        fs::write(
+            root.join("first-light/narrative/huge.json"),
+            serde_json::to_string(&record).unwrap(),
+        )
+        .unwrap();
+        let err = store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "huge"}))
+            .unwrap_err();
+        assert_eq!(err.code, "playtest_bound_exceeded");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- FRZ: verdicts, freeze, lifecycle ----------
+
+    fn env_id(id: &str) -> Value {
+        json!({"record_id": id, "origin_lane": "qompass",
+               "content_label": "sfw", "evidence": "frz test"})
+    }
+
+    fn subject_now(store: &Store, project_id: &str, record_id: &str) -> Value {
+        let record = store
+            .find_record_by_id(project_id, record_id)
+            .expect("subject exists");
+        json!({"record_id": record_id, "sha256": record_hash(&record)})
+    }
+
+    fn frz_dialogue(store: &Store) {
+        store
+            .author_dialogue(
+                &json!({"envelope": env_id("rec-dlg"), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "open", "speaker": "warden", "text": "State your business."}]}),
+            )
+            .unwrap();
+    }
+
+    fn verdict_args(pack: &str, ruling: &str, subjects: Value) -> Value {
+        json!({"envelope": env_id("rec-verdict"), "project_id": "first-light",
+               "pack_id": pack, "decision_ref": "D-TEST",
+               "ruling": ruling, "subjects": subjects})
+    }
+
+    #[test]
+    fn verdict_adopt_freezes_and_thaw_releases() {
+        let (bare, bare_root, _bare_src) = scaffolded("frz1-bare");
+        assert_eq!(
+            bare.inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "scaffolded"
+        );
+        let _ = fs::remove_dir_all(&bare_root);
+        let (store, root) = nar_store("frz1");
+        frz_dialogue(&store);
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "authoring"
+        );
+        let body = store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+        assert_eq!(body["subjects"], 1);
+        assert_eq!(body["seq"], 1);
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "frozen_slice"
+        );
+        // Frozen: the define path answers frozen_record.
+        let err = store
+            .author_dialogue(
+                &json!({"envelope": env_id("rec-dlg-2"), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "open", "speaker": "warden", "text": "Edited."}]}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "frozen_record");
+        // Thaw: a later send_back on the same subject.
+        store
+            .record_verdict(&verdict_args(
+                "pack-2",
+                "send_back",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "authoring"
+        );
+        // Thawed: the define path is back to its normal
+        // conflict.
+        let err = store
+            .author_dialogue(
+                &json!({"envelope": env_id("rec-dlg-2"), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "open", "speaker": "warden", "text": "Edited."}]}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "conflict");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_verdict_refusals() {
+        let (store, root) = nar_store("frz2");
+        frz_dialogue(&store);
+        // Stale hash: the pack was assembled against a state
+        // the record no longer has.
+        let err = store
+            .record_verdict(&verdict_args(
+                "pack-stale",
+                "adopt",
+                json!([{"record_id": "rec-dlg", "sha256": "0".repeat(64)}]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "verdict_hash_mismatch");
+        // Unknown subject.
+        let err = store
+            .record_verdict(&verdict_args(
+                "pack-unknown",
+                "adopt",
+                json!([{"record_id": "rec-nope", "sha256": "0".repeat(64)}]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "subject_unknown");
+        // Empty subject list.
+        let err = store
+            .record_verdict(&verdict_args("pack-empty", "adopt", json!([])))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        // A ruling outside the enum.
+        let err = store
+            .record_verdict(&verdict_args(
+                "pack-maybe",
+                "maybe",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn frozen_cast_record_refuses_the_lock() {
+        let (store, root) = temp_store("frz3");
+        let source = source_file(&root);
+        store.create_project(&create_args()).unwrap();
+        let mut a = cast_args(&source);
+        a["envelope"] = env_id("rec-cast-warden");
+        store.add_cast(&a).unwrap();
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-cast-warden")]),
+            ))
+            .unwrap();
+        let err = store.lock_cast(&lock_args(&source)).unwrap_err();
+        assert_eq!(err.code, "frozen_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn census_body(store: &Store) -> Value {
+        match store.canon_census(&json!({"project_id": "first-light"})) {
+            Ok(body) => body,
+            Err(e) => e.census.expect("census body rides the error"),
+        }
+    }
+
+    #[test]
+    fn unit_states_flow_ungated_gated_sealed() {
+        let (store, root) = slice_store("frz4");
+        let census = census_body(&store);
+        assert_eq!(census["counts"]["unit_states"]["ungated"], 1, "{census}");
+        store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "gate-arc"}))
+            .unwrap();
+        let census = census_body(&store);
+        assert_eq!(census["counts"]["unit_states"]["gated"], 1, "{census}");
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-1")]),
+            ))
+            .unwrap();
+        let census = census_body(&store);
+        assert_eq!(census["counts"]["unit_states"]["sealed"], 1, "{census}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- EMT: emit ----------
+
+    fn emit_store(tag: &str) -> (Store, PathBuf, PathBuf) {
+        let (store, root) = nar_store(tag);
+        let emit_root = root.join("emit-root");
+        fs::create_dir_all(&emit_root).unwrap();
+        let store = store.with_emit_root(emit_root.clone());
+        (store, root, emit_root)
+    }
+
+    fn freeze_dialogue(store: &Store) {
+        frz_dialogue(store);
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+    }
+
+    fn emit_args(emitter: &str, out_dir: &str, subjects: Value) -> Value {
+        json!({"envelope": env_id("rec-emit"), "project_id": "first-light",
+               "emitter": emitter, "out_dir": out_dir, "subjects": subjects})
+    }
+
+    #[test]
+    fn emit_content_modules_carry_the_frozen_records() {
+        let (store, root, emit_root) = emit_store("emt1");
+        freeze_dialogue(&store);
+        let body = store
+            .emit(&emit_args(
+                "bevy-rust-content/1",
+                "gate-content",
+                json!(["rec-dlg"]),
+            ))
+            .unwrap();
+        assert_eq!(body["file_count"], 2, "module + lib.rs: {body}");
+        let target = emit_root.join("gate-content");
+        let module = fs::read_to_string(target.join("dialogue_gate_words.rs")).unwrap();
+        let record = store.find_record_by_id("first-light", "rec-dlg").unwrap();
+        let expected = format!(
+            "//! Generated by meister_emit (emitter bevy-rust-content/1). Do not edit by hand.\n//! Subject set: {}\n//! Source record: rec-dlg (meister_dialogue), frozen by verdict.\n\n/// The canonical record JSON, exactly as frozen.\npub const DIALOGUE_GATE_WORDS_JSON: &str = \"{}\";\n",
+            body["subject_set_hash"].as_str().unwrap(),
+            escape_rust_str(&canonical_json(&record)),
+        );
+        assert_eq!(module, expected);
+        let lib = fs::read_to_string(target.join("lib.rs")).unwrap();
+        assert!(lib.contains("pub mod dialogue_gate_words;"), "{lib}");
+        // The manifest's per-file hashes are the files' hashes.
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(target.join("emit-manifest.json")).unwrap())
+                .unwrap();
+        for f in manifest["files"].as_array().unwrap() {
+            let bytes = fs::read(target.join(f["path"].as_str().unwrap())).unwrap();
+            assert_eq!(f["sha256"].as_str().unwrap(), sha256_hex(&bytes));
+        }
+        // The project now reports the emitted lifecycle.
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "emitted"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn emit_twice_is_byte_identical() {
+        let (store, root, emit_root) = emit_store("emt2");
+        freeze_dialogue(&store);
+        let args = emit_args("bevy-rust-content/1", "gate-content", json!(["rec-dlg"]));
+        store.emit(&args).unwrap();
+        let target = emit_root.join("gate-content");
+        let first: Vec<(String, Vec<u8>)> =
+            ["dialogue_gate_words.rs", "lib.rs", "emit-manifest.json"]
+                .iter()
+                .map(|n| (n.to_string(), fs::read(target.join(n)).unwrap()))
+                .collect();
+        store.emit(&args).unwrap();
+        for (name, bytes) in first {
+            assert_eq!(fs::read(target.join(&name)).unwrap(), bytes, "{name}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_emit_refusals() {
+        let (store, root, emit_root) = emit_store("emt3");
+        frz_dialogue(&store);
+        // Unfrozen subject.
+        let err = store
+            .emit(&emit_args("bevy-rust-content/1", "x", json!(["rec-dlg"])))
+            .unwrap_err();
+        assert_eq!(err.code, "subject_unfrozen");
+        // Unknown emitter.
+        let err = store
+            .emit(&emit_args("unity/9", "x", json!(["rec-dlg"])))
+            .unwrap_err();
+        assert_eq!(err.code, "emitter_unknown");
+        // Empty subjects.
+        let err = store
+            .emit(&emit_args("bevy-rust-content/1", "x", json!([])))
+            .unwrap_err();
+        assert_eq!(err.code, "subject_empty");
+        // Traversal out of the root.
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+        let err = store
+            .emit(&emit_args(
+                "bevy-rust-content/1",
+                "../escape",
+                json!(["rec-dlg"]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "emit_path_refused");
+        assert!(!emit_root.parent().unwrap().join("escape").exists());
+        // A foreign file in the target.
+        let target = emit_root.join("occupied");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("foreign.txt"), "not meister's").unwrap();
+        let err = store
+            .emit(&emit_args(
+                "bevy-rust-content/1",
+                "occupied",
+                json!(["rec-dlg"]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "emit_conflict");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn emit_shell_has_the_estate_shape() {
+        let (store, root, emit_root) = emit_store("emt4");
+        freeze_dialogue(&store);
+        let body = store
+            .emit(&emit_args("bevy-shell/1", "gate-shell", json!(["rec-dlg"])))
+            .unwrap();
+        assert_eq!(body["file_count"], 5, "{body}");
+        let target = emit_root.join("gate-shell");
+        let cargo = fs::read_to_string(target.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("edition = \"2024\""), "{cargo}");
+        assert!(cargo.contains("name = \"first_light\""), "{cargo}");
+        let toolchain = fs::read_to_string(target.join("rust-toolchain.toml")).unwrap();
+        assert!(toolchain.contains("nightly-2026-10-30"), "{toolchain}");
+        let mod_rs = fs::read_to_string(target.join("src/content/mod.rs")).unwrap();
+        assert!(mod_rs.contains("pub mod dialogue_gate_words;"), "{mod_rs}");
+        assert!(mod_rs.contains("RECORD_COUNT: usize = 1"), "{mod_rs}");
+        let main_rs = fs::read_to_string(target.join("src/main.rs")).unwrap();
+        assert!(main_rs.contains("#[allow(dead_code)]"), "{main_rs}");
+        assert!(target.join("src/content/dialogue_gate_words.rs").exists());
         let _ = fs::remove_dir_all(&root);
     }
 }

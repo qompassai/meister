@@ -144,7 +144,11 @@ fn discover_and_list_serve_the_full_annotated_surface() {
         "meister"
     );
     let tools = resps[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 31, "the full Rung 0 surface");
+    assert_eq!(
+        tools.len(),
+        33,
+        "the full surface (31 at Rung 0, 33 since Rung 3)"
+    );
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert_eq!(tool["inputSchema"]["type"], "object", "{name} input type");
@@ -192,12 +196,12 @@ fn lane_check_allows_sfw_qompass_over_the_wire() {
 
 #[test]
 fn sfw_envelope_reaches_the_seam() {
-    // A Group 4 seam (Rung 3): the allowed envelope still falls
-    // through the gate to the seam error, unchanged by Rung 1.
-    // (Group 3's tools all became real at Rung 2.)
+    // A Group 6 seam (Rung 6): the allowed envelope still
+    // falls through the gate to the seam error, unchanged by
+    // Rungs 1-3. (Groups 3-5 became real at Rungs 2-3.)
     let req = call(
         1,
-        "meister_dialogue_author",
+        "meister_rating_record",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
                            "project_id": "p1"}),
     );
@@ -205,7 +209,7 @@ fn sfw_envelope_reaches_the_seam() {
     assert_eq!(resps[1]["result"]["isError"], true);
     let body = result_json(&resps[1]);
     assert_eq!(body["error"]["code"], "not_implemented");
-    assert_eq!(body["error"]["rung"], 3);
+    assert_eq!(body["error"]["rung"], 6);
 }
 
 // ---------- adversarial ----------
@@ -783,12 +787,14 @@ const SYSTEMS_OWN: [&str; 4] = [
     "meister_scene_validate",
     "meister_system_define",
 ];
-const NARRATIVE_OWN: [&str; 5] = [
+const NARRATIVE_OWN: [&str; 7] = [
     "meister_dialogue_author",
     "meister_dialogue_get",
     "meister_playtest_generate",
     "meister_reaction_set",
     "meister_story_define",
+    "meister_verdict_record",
+    "meister_emit",
 ];
 const ASSETS_OWN: [&str; 3] = [
     "meister_asset_chain_get",
@@ -971,12 +977,15 @@ fn in_profile_calls_run_under_their_profile() {
         &[&discover(), &inspect],
     );
     assert_eq!(result_json(&resps[1])["project_id"], "profile-game");
-    // The bundle carries Group 4: the call reaches its seam.
+    // The bundle carries Group 5: the call dispatches to the
+    // real tool, which answers not_found for a graph the
+    // project does not hold — never the profile refusal.
     let scene = call(
         1,
-        "meister_dialogue_author",
+        "meister_playtest_generate",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "profile-game"}),
+                           "project_id": "profile-game",
+                           "graph_ref": "no-such-arc"}),
     );
     let resps = rpc_profile(
         Some("niflheim-floor"),
@@ -984,7 +993,7 @@ fn in_profile_calls_run_under_their_profile() {
         &store,
         &[&discover(), &scene],
     );
-    assert_eq!(result_json(&resps[1])["error"]["code"], "not_implemented");
+    assert_eq!(result_json(&resps[1])["error"]["code"], "not_found");
     let _ = std::fs::remove_dir_all(&store);
 }
 

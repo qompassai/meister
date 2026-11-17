@@ -1,9 +1,9 @@
 {
   "id": "lvl-04-narrative",
   "tool": "meister_level_compose",
-  "expected_code": "not_implemented_until_rung3",
+  "expected_code": "invalid_record",
   "provenance": "synthetic-classic",
-  "note": "a narrative field: Rung 3 owns it, the refusal is typed",
+  "note": "a narrative field in free-form shape: since Rung 3 it must be a chamber-composition array, and this object is refused as malformed",
   "arguments": {
     "envelope": {
       "record_id": "rec-mal-lvl-04-narrative",
