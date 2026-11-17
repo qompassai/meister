@@ -2182,7 +2182,7 @@ channel = \"nightly-2026-10-30\"
                 files.push((
                     "src/main.rs".to_string(),
                     format!(
-                        "//! Generated shell for {project_id} (emitter bevy-shell/1).\n\nmod content;\n\nfn main() {{\n    println!(\"{project_id}: {{}} frozen content records\", content::RECORD_COUNT);\n}}\n"
+                        "//! Generated shell for {project_id} (emitter bevy-shell/1).\n\n#[allow(dead_code)]\nmod content;\n\nfn main() {{\n    println!(\"{project_id}: {{}} frozen content records\", content::RECORD_COUNT);\n}}\n"
                     ),
                 ));
                 Ok(files)
@@ -7107,7 +7107,8 @@ mod tests {
         let mod_rs = fs::read_to_string(target.join("src/content/mod.rs")).unwrap();
         assert!(mod_rs.contains("pub mod dialogue_gate_words;"), "{mod_rs}");
         assert!(mod_rs.contains("RECORD_COUNT: usize = 1"), "{mod_rs}");
-        assert!(target.join("src/main.rs").exists());
+        let main_rs = fs::read_to_string(target.join("src/main.rs")).unwrap();
+        assert!(main_rs.contains("#[allow(dead_code)]"), "{main_rs}");
         assert!(target.join("src/content/dialogue_gate_words.rs").exists());
         let _ = fs::remove_dir_all(&root);
     }
