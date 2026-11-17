@@ -17,9 +17,16 @@ hand; re-run the script.
 
 | Profile | Tools | Bytes | Tokens | Budget |
 |---|---:|---:|---:|---|
-| `(default)` | 31 | 25,700 | **5,774** | OVER by 3,274 |
+| `core` | 4 | 3,276 | **743** | within (1,757 under) |
+| `canon` | 7 | 6,917 | **1,564** | within (936 under) |
+| `systems` | 8 | 6,589 | **1,495** | within (1,005 under) |
+| `narrative` | 9 | 7,170 | **1,612** | within (888 under) |
+| `assets` | 7 | 5,936 | **1,360** | within (1,140 under) |
+| `qa` | 10 | 7,838 | **1,770** | within (730 under) |
+| `release` | 10 | 7,630 | **1,688** | within (812 under) |
+| `niflheim-floor` | 13 | 10,483 | **2,364** | within (136 under) |
+| `full` | 31 | 25,700 | **5,774** | OVER by 3,274 |
 
-`(default)` is the surface served with `MEISTER_PROFILE` unset.
 Bytes are the UTF-8 length of the canonical array.
 
 ## Per tool
@@ -28,7 +35,115 @@ Each tool object canonicalised and counted on its own. A profile's
 total is counted over its whole array, so it differs from the sum of
 its tools by the array punctuation.
 
-### `(default)` — 31 tools, 5,774 tokens
+### `core` — 4 tools, 743 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_project_list` | 594 | 137 |
+
+### `canon` — 7 tools, 1,564 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_project_create` | 1,621 | 376 |
+| `meister_cast_lock` | 1,020 | 225 |
+| `meister_cast_add` | 997 | 220 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_project_list` | 594 | 137 |
+
+### `systems` — 8 tools, 1,495 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_system_define` | 1,010 | 233 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_level_compose` | 903 | 203 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_scene_define` | 811 | 183 |
+| `meister_project_list` | 594 | 137 |
+| `meister_scene_validate` | 585 | 133 |
+
+### `narrative` — 9 tools, 1,612 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_reaction_set` | 1,026 | 226 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_dialogue_author` | 882 | 199 |
+| `meister_story_define` | 850 | 195 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_project_list` | 594 | 137 |
+| `meister_playtest_generate` | 587 | 128 |
+| `meister_dialogue_get` | 544 | 121 |
+
+### `assets` — 7 tools, 1,360 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_asset_route` | 1,030 | 243 |
+| `meister_asset_intake` | 1,014 | 241 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_project_list` | 594 | 137 |
+| `meister_asset_chain_get` | 613 | 133 |
+
+### `qa` — 10 tools, 1,770 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_rating_record` | 957 | 221 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_defect_record` | 872 | 200 |
+| `meister_playtest_define` | 852 | 193 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_accessibility_check` | 717 | 155 |
+| `meister_replay_check` | 610 | 138 |
+| `meister_project_list` | 594 | 137 |
+| `meister_content_summary` | 548 | 120 |
+
+### `release` — 10 tools, 1,688 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_account_register` | 1,051 | 225 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_release_prepare` | 872 | 195 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_account_inspect` | 702 | 153 |
+| `meister_project_list` | 594 | 137 |
+| `meister_account_verify` | 629 | 131 |
+| `meister_preflight_run` | 587 | 131 |
+| `meister_channel_list` | 507 | 110 |
+
+### `niflheim-floor` — 13 tools, 2,364 tokens
+
+| Tool | Bytes | Tokens |
+|---|---:|---:|
+| `meister_system_define` | 1,010 | 233 |
+| `meister_reaction_set` | 1,026 | 226 |
+| `meister_project_inspect` | 969 | 213 |
+| `meister_canon_check` | 891 | 203 |
+| `meister_level_compose` | 903 | 203 |
+| `meister_dialogue_author` | 882 | 199 |
+| `meister_story_define` | 850 | 195 |
+| `meister_lane_check` | 817 | 188 |
+| `meister_scene_define` | 811 | 183 |
+| `meister_project_list` | 594 | 137 |
+| `meister_scene_validate` | 585 | 133 |
+| `meister_playtest_generate` | 587 | 128 |
+| `meister_dialogue_get` | 544 | 121 |
+
+### `full` — 31 tools, 5,774 tokens
 
 | Tool | Bytes | Tokens |
 |---|---:|---:|

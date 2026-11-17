@@ -206,7 +206,8 @@ def render(tiktoken_version, server_version, measured):
             f"| `{label}` | {len(tools)} | {row['bytes']:,} | **{row['tokens']:,}** | {budget_cell(row['tokens'])} |"
         )
     out.append("")
-    out.append(f"`{DEFAULT_LABEL}` is the surface served with `{PROFILE_ENV}` unset.")
+    if any(label == DEFAULT_LABEL for label, _, _ in measured):
+        out.append(f"`{DEFAULT_LABEL}` is the surface served with `{PROFILE_ENV}` unset.")
     out.append("Bytes are the UTF-8 length of the canonical array.")
     out.append("")
     out.append("## Per tool")
