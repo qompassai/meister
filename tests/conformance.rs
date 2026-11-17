@@ -415,13 +415,14 @@ fn rung1_full_flow_over_the_wire() {
     // Dependent calls go in separate sessions: rmcp dispatches
     // pipelined requests concurrently, so a lock must not share
     // a pipeline with the add it depends on.
-    let add = call(
-        2,
-        "meister_cast_add",
-        serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "wire-game", "character_id": "warden",
-                           "identity": wire_identity(&source)}),
-    );
+    // The cast record carries its own envelope record_id:
+    // STORE-03 holds record_ids unique per project, so it may not
+    // reuse the project record envelope id.
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(&source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
     let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
     let added = result_json(&resps[1]);
     assert_eq!(added["status"], "candidate", "cast_add body: {added}");
@@ -472,13 +473,14 @@ fn rung1_tampered_source_fails_the_census_over_the_wire() {
     let store = fresh_store();
     let source = fixture_file("tamper");
     let _ = wire_create(&store, &source);
-    let add = call(
-        2,
-        "meister_cast_add",
-        serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "wire-game", "character_id": "warden",
-                           "identity": wire_identity(&source)}),
-    );
+    // The cast record carries its own envelope record_id:
+    // STORE-03 holds record_ids unique per project, so it may not
+    // reuse the project record envelope id.
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(&source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
     let _ = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &add]);
     let lock = call(
         3,
@@ -506,13 +508,13 @@ fn rung1_tampered_source_fails_the_census_over_the_wire() {
 /// Build the locked wire project and return its passing census.
 fn wire_locked_project(store: &std::path::Path, source: &std::path::Path) -> serde_json::Value {
     let _ = wire_create(store, source);
-    let add = call(
-        2,
-        "meister_cast_add",
-        serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "wire-game", "character_id": "warden",
-                           "identity": wire_identity(source)}),
-    );
+    // The cast record carries its own envelope record_id
+    // (STORE-03: record_ids are unique per project).
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
     let _ = rpc_store(&std::env::temp_dir(), store, &[&discover(), &add]);
     let lock = call(
         3,
@@ -1037,13 +1039,14 @@ fn adv_out_of_profile_refusals_are_pre_mutation() {
                            "name": "Second Game", "engine": "bevy",
                            "genre_pack": "puzzle"}),
     );
-    let add = call(
-        2,
-        "meister_cast_add",
-        serde_json::json!({"envelope": envelope("sfw", "qompass"),
-                           "project_id": "wire-game", "character_id": "warden",
-                           "identity": wire_identity(&source)}),
-    );
+    // The cast record carries its own envelope record_id:
+    // STORE-03 holds record_ids unique per project, so it may not
+    // reuse the project record envelope id.
+    let mut add_args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+                       "project_id": "wire-game", "character_id": "warden",
+                       "identity": wire_identity(&source)});
+    add_args["envelope"]["record_id"] = serde_json::json!("rec-wire-cast-1");
+    let add = call(2, "meister_cast_add", add_args);
     let nsfw = call(
         3,
         "meister_cast_lock",

@@ -213,6 +213,20 @@ the verdict fails with `census_stale`, which outranks
 Staleness is a field plus a named failure line, not a counted
 claim, so `checked` does not change.
 
+STORE-03 adds two counted census claim families, no new error
+code. `canon_orphan`: every id a record references resolves —
+a cast record's project, each form's governing reference, and
+the identity lock's form and governing reference (the lock's
+governing reference must also be the locked form's own).
+`record_id_duplicate`: `envelope.record_id` is unique per
+project (audit item A13) — one claim per record, every holder
+of a shared id unverified. The census counts gain
+`references_checked` and `duplicate_record_ids`. Verified
+against the adopted Niflheim store on landing: 55 checked /
+3 unverified, the three records still carrying the Rung 1
+gate scaffold's shared record_id (an Owner decision, filed in
+the night DECISIONS.md; the store itself was not modified).
+
 ## 6. Resources, prompts, other surfaces
 
 None at Rung 0: the guard answers resource and prompt methods

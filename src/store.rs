@@ -1396,6 +1396,8 @@ impl Census {
             governing_refs += g;
             chain_entries += m;
         }
+        let (references, duplicate_ids) =
+            census_references(&mut b, store, project_id, &project, &cast);
         let stale_reason = staleness(&state_hash, &store.state_hash(project_id)?, prior);
         let stale = stale_reason.is_some();
         let stale_reason = stale_reason.unwrap_or_default();
@@ -1421,6 +1423,8 @@ impl Census {
                 "canon_facts": project["canon"].as_array().map_or(0, Vec::len),
                 "governing_references": governing_refs,
                 "media_chain_entries": chain_entries,
+                "references_checked": references,
+                "duplicate_record_ids": duplicate_ids,
             },
             "checks": b.checks,
             "failures": b.failures,
@@ -1433,6 +1437,187 @@ impl Census {
             stale_reason,
         })
     }
+}
+
+/// One reference-resolution claim (STORE-03, `canon_orphan`).
+#[allow(clippy::too_many_arguments)]
+fn ref_claim(
+    b: &mut CensusBuilder,
+    character_id: &str,
+    kind: &str,
+    target: &str,
+    rel: &str,
+    sha: &Option<String>,
+    resolved: bool,
+    project_id: &str,
+) {
+    b.check(Claim {
+        id: format!("cast:{character_id}:ref:{kind}"),
+        subject: character_id.to_string(),
+        claim: "canon_orphan: every id a record references resolves".to_string(),
+        value: json!(target),
+        source_artifact: rel.to_string(),
+        source_sha256: sha.clone(),
+        verified: resolved,
+        detail: if resolved {
+            format!("reference to {kind} {target} resolves")
+        } else {
+            format!(
+                "{rel} references {kind} {target}, which does not resolve in project {project_id}"
+            )
+        },
+    });
+}
+
+/// STORE-03: the reference graph and record-id uniqueness, as
+/// census claims over the records the census already read.
+///
+/// `canon_orphan` — every id a record references resolves: a cast
+/// record's project, each form's governing reference, and the
+/// identity lock's form and governing reference (the lock's
+/// governing reference must also be the locked form's own, the
+/// D-1410 contract recomputed as a reference claim).
+///
+/// `record_id_duplicate` — `envelope.record_id` is unique per
+/// project (audit item A13): one claim per record; every record
+/// carrying a shared id is unverified, naming all its holders.
+///
+/// Returns (references checked, distinct duplicated record ids).
+fn census_references(
+    b: &mut CensusBuilder,
+    store: &Store,
+    project_id: &str,
+    project: &Value,
+    cast: &[Value],
+) -> (usize, usize) {
+    let project_dir = store.project_dir(project_id);
+    // Record-id uniqueness across the project's records.
+    let mut holders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut records: Vec<(String, Option<String>)> = Vec::new();
+    let project_id_value = project["envelope"]["record_id"]
+        .as_str()
+        .map(str::to_string);
+    if let Some(id) = &project_id_value {
+        holders
+            .entry(id.clone())
+            .or_default()
+            .push("project.json".to_string());
+    }
+    records.push(("project.json".to_string(), project_id_value));
+    for record in cast {
+        let character_id = record["character_id"].as_str().unwrap_or("?");
+        let rel = format!("cast/{character_id}.json");
+        let id = record["envelope"]["record_id"].as_str().map(str::to_string);
+        if let Some(id) = &id {
+            holders.entry(id.clone()).or_default().push(rel.clone());
+        }
+        records.push((rel, id));
+    }
+    let duplicate_ids = holders.values().filter(|v| v.len() > 1).count();
+    for (rel, id) in &records {
+        let (verified, detail) = match id {
+            None => (false, "record carries no envelope.record_id".to_string()),
+            Some(id) => {
+                let held_by = &holders[id];
+                if held_by.len() > 1 {
+                    (
+                        false,
+                        format!("record_id {id} is shared by {}", held_by.join(", ")),
+                    )
+                } else {
+                    (true, format!("record_id {id} is unique in the project"))
+                }
+            }
+        };
+        b.check(Claim {
+            id: format!("record:{rel}:record_id"),
+            subject: project_id.to_string(),
+            claim: "record_id_duplicate: envelope.record_id is unique per project".to_string(),
+            value: json!(id),
+            source_artifact: rel.clone(),
+            source_sha256: file_sha256(&project_dir.join(rel)),
+            verified,
+            detail,
+        });
+    }
+    // Reference resolution, per cast record.
+    let mut references = 0usize;
+    for record in cast {
+        let character_id = record["character_id"].as_str().unwrap_or("?");
+        let rel = format!("cast/{character_id}.json");
+        let sha = file_sha256(&project_dir.join(&rel));
+        let identity = &record["identity"];
+        let governing_refs = identity["governing_references"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let governing: BTreeSet<&str> = governing_refs
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        let forms = identity["forms"].as_array().cloned().unwrap_or_default();
+        references += 1;
+        let target = record["project_id"].as_str().unwrap_or("");
+        ref_claim(
+            b,
+            character_id,
+            "project",
+            target,
+            &rel,
+            &sha,
+            target == project_id,
+            project_id,
+        );
+        for form in &forms {
+            if let Some(g) = form["governing_reference_id"].as_str() {
+                references += 1;
+                ref_claim(
+                    b,
+                    character_id,
+                    "form_governing",
+                    g,
+                    &rel,
+                    &sha,
+                    governing.contains(g),
+                    project_id,
+                );
+            }
+        }
+        if let Some(lock) = record.get("identity_lock").filter(|v| !v.is_null()) {
+            let locked_form = lock["form_id"]
+                .as_str()
+                .and_then(|fid| forms.iter().find(|f| f["form_id"].as_str() == Some(fid)));
+            if let Some(fid) = lock["form_id"].as_str() {
+                references += 1;
+                ref_claim(
+                    b,
+                    character_id,
+                    "lock_form",
+                    fid,
+                    &rel,
+                    &sha,
+                    locked_form.is_some(),
+                    project_id,
+                );
+            }
+            if let Some(g) = lock["governing_reference_id"].as_str() {
+                references += 1;
+                let resolved = governing.contains(g)
+                    && locked_form.is_some_and(|f| f["governing_reference_id"].as_str() == Some(g));
+                ref_claim(
+                    b,
+                    character_id,
+                    "lock_governing",
+                    g,
+                    &rel,
+                    &sha,
+                    resolved,
+                    project_id,
+                );
+            }
+        }
+    }
+    (references, duplicate_ids)
 }
 
 fn census_project(
@@ -1894,8 +2079,13 @@ mod tests {
     }
 
     fn cast_args(source: &Path) -> Value {
-        json!({"envelope": envelope(), "project_id": "first-light",
-               "character_id": "warden", "identity": identity(source)})
+        // The cast record carries its own envelope record_id:
+        // STORE-03 holds record_ids unique per project, so a
+        // fixture may not reuse the project's "rec-1".
+        let mut args = json!({"envelope": envelope(), "project_id": "first-light",
+               "character_id": "warden", "identity": identity(source)});
+        args["envelope"]["record_id"] = json!("rec-cast-warden");
+        args
     }
 
     fn lock_args(source: &Path) -> Value {
@@ -1944,10 +2134,7 @@ mod tests {
     #[test]
     fn cast_add_lock_and_census_pass() {
         let (store, root, source) = scaffolded("census-pass");
-        let added = store
-            .add_cast(&json!({"envelope": envelope(), "project_id": "first-light",
-                              "character_id": "warden", "identity": identity(&source)}))
-            .unwrap();
+        let added = store.add_cast(&cast_args(&source)).unwrap();
         assert_eq!(added["status"], "candidate");
         let locked = store
             .lock_cast(&json!({"envelope": envelope(), "project_id": "first-light",
@@ -2110,6 +2297,140 @@ mod tests {
             .canon_census(&json!({"project_id": "first-light"}))
             .unwrap();
         assert_eq!(tree(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- STORE-03: references and record ids ----------
+
+    /// Read a stored record, mutate it, write it back — the
+    /// behind-the-server's-back tamper the census exists to catch.
+    fn tamper_cast(root: &Path, mutate: impl FnOnce(&mut Value)) {
+        let file = root.join("first-light/cast/warden.json");
+        let mut record: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        mutate(&mut record);
+        fs::write(&file, record.to_string()).unwrap();
+    }
+
+    fn check_named<'v>(body: &'v Value, needle: &str) -> &'v Value {
+        body["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"].as_str().unwrap().contains(needle))
+            .unwrap_or_else(|| panic!("no check naming {needle}: {body}"))
+    }
+
+    #[test]
+    fn census_reference_graph_resolves_on_a_locked_project() {
+        let (store, root, _source) = locked_project("refs-pass");
+        let census = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap();
+        assert_eq!(census["verdict"], "pass", "census: {census}");
+        // project + form governing + lock form + lock governing.
+        assert_eq!(census["counts"]["references_checked"], 4);
+        assert_eq!(census["counts"]["duplicate_record_ids"], 0);
+        for needle in [
+            "ref:project",
+            "ref:form_governing",
+            "ref:lock_form",
+            "ref:lock_governing",
+            ":record_id",
+        ] {
+            assert_eq!(
+                check_named(&census, needle)["status"],
+                "verified",
+                "check {needle}: {census}"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_census_names_a_dangling_cast_project_reference() {
+        let (store, root, _source) = locked_project("refs-dangling-project");
+        tamper_cast(&root, |r| r["project_id"] = json!("elsewhere"));
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        assert_eq!(err.code, "canon_unverified");
+        let body = err.census.expect("the census rides the refusal");
+        assert_eq!(check_named(&body, "ref:project")["status"], "unverified");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_census_names_a_dangling_form_governing_reference() {
+        let (store, root, _source) = locked_project("refs-dangling-form");
+        tamper_cast(&root, |r| {
+            r["identity"]["forms"][0]["governing_reference_id"] = json!("missing")
+        });
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("the census rides the refusal");
+        assert_eq!(
+            check_named(&body, "ref:form_governing")["status"],
+            "unverified"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_census_names_a_dangling_lock_form() {
+        let (store, root, _source) = locked_project("refs-dangling-lock");
+        tamper_cast(&root, |r| r["identity_lock"]["form_id"] = json!("nope"));
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("the census rides the refusal");
+        assert_eq!(check_named(&body, "ref:lock_form")["status"], "unverified");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_census_names_a_duplicate_record_id() {
+        let (store, root, _source) = locked_project("refs-duplicate");
+        tamper_cast(&root, |r| r["envelope"]["record_id"] = json!("rec-1"));
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("the census rides the refusal");
+        assert_eq!(body["counts"]["duplicate_record_ids"], 1);
+        // Both holders of the shared id are unverified.
+        let dupes = body["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| {
+                c["id"].as_str().unwrap().contains(":record_id") && c["status"] == "unverified"
+            })
+            .count();
+        assert_eq!(dupes, 2, "census: {body}");
+        assert!(
+            body["failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap().contains("record_id rec-1 is shared by")),
+            "failures: {body}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_census_reports_orphan_and_duplicate_together() {
+        let (store, root, _source) = locked_project("refs-both");
+        tamper_cast(&root, |r| {
+            r["project_id"] = json!("elsewhere");
+            r["envelope"]["record_id"] = json!("rec-1");
+        });
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("the census rides the refusal");
+        assert_eq!(check_named(&body, "ref:project")["status"], "unverified");
+        assert_eq!(body["counts"]["duplicate_record_ids"], 1);
         let _ = fs::remove_dir_all(&root);
     }
 
