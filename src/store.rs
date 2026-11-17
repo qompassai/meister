@@ -2570,6 +2570,103 @@ channel = \"nightly-2026-10-30\"
         }))
     }
 
+    pub fn asset_route(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_asset_route(args))
+    }
+
+    /// `meister_asset_route` (AST-05): record a handoff of
+    /// one asset to its owning specialist — lumen (media),
+    /// eigenstyle (voice style), bloch (lessons), fathom
+    /// (clean-room study). Meister records the handoff and
+    /// re-implements nothing. A missing asset record is
+    /// `record_missing`; a stale lock refuses (AST-04);
+    /// fathom is spec-only — a route claiming the asset
+    /// itself for fathom is `fathom_asset_refused`.
+    fn plan_asset_route(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let asset_id = arg_id(args, "asset_id")?;
+        let target = req_text(args, "target", MAX_ID_CHARS)?;
+        if !["lumen", "eigenstyle", "bloch", "fathom"].contains(&target.as_str()) {
+            return Err(StoreError::invalid(format!(
+                "target must be lumen, eigenstyle, bloch or fathom, not {target}"
+            )));
+        }
+        let purpose = req_text(args, "purpose", MAX_TEXT_CHARS)?;
+        let mode = args.get("mode").and_then(Value::as_str).unwrap_or("spec");
+        if !["spec", "asset"].contains(&mode) {
+            return Err(StoreError::invalid("mode must be spec or asset"));
+        }
+        self.read_project(&project_id)?;
+        let asset = self.read_asset(&project_id, &asset_id).map_err(|_| {
+            StoreError::new(
+                "record_missing",
+                format!("no asset record {asset_id} in {project_id} to route"),
+            )
+        })?;
+        if target == "fathom" && mode == "asset" {
+            return Err(StoreError::new(
+                "fathom_asset_refused",
+                "fathom routes are spec-only: clean-room study takes the                  specification, never the extracted asset",
+            ));
+        }
+        if let (Some(cid), Some(taken)) =
+            (asset["character_id"].as_str(), asset["lock_hash"].as_str())
+        {
+            let current = self
+                .find_cast(&project_id, cid)
+                .and_then(|cast| {
+                    cast.get("identity_lock")
+                        .filter(|v| !v.is_null())
+                        .and_then(|lock| lock["lock_hash"].as_str().map(str::to_string))
+                })
+                .unwrap_or_default();
+            if current != taken {
+                return Err(StoreError::new(
+                    "lock_stale",
+                    format!(
+                        "asset {asset_id} was taken under a lock that no longer stands for {cid}"
+                    ),
+                ));
+            }
+        }
+        let handoff_id = format!("{asset_id}-{target}");
+        let file = self
+            .project_dir(&project_id)
+            .join("routes")
+            .join(format!("{handoff_id}.json"));
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("handoff {handoff_id} already recorded in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let record = json!({
+            "record_type": "meister_handoff",
+            "schema_version": 1,
+            "project_id": project_id,
+            "asset_id": asset_id,
+            "target": target,
+            "purpose": purpose,
+            "mode": mode,
+            "handoff_id": handoff_id,
+            "envelope": envelope,
+            "status": "recorded",
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({
+                "project_id": project_id,
+                "asset_id": asset_id,
+                "target": target,
+                "handoff_id": handoff_id,
+            }),
+        })
+    }
+
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
         let project_id = arg_id(args, "project_id")?;
         let prior = match args.get("prior_state_hash") {
@@ -7718,6 +7815,79 @@ mod tests {
         let custody_dir = root.join("first-light/custody");
         let recorded = fs::read_dir(&custody_dir).unwrap().count();
         assert_eq!(recorded, 1, "the refusal is on record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn route_records_one_handoff_per_media_format() {
+        let (store, root, _src) = ast_store("ast8");
+        // Every media-map format routes to its owner:
+        // media kinds to lumen, voice to eigenstyle.
+        let kinds = [
+            "still_2d",
+            "pixel",
+            "animation",
+            "model_3d",
+            "effect",
+            "audio",
+            "voice",
+            "text",
+            "video",
+        ];
+        for (i, kind) in kinds.iter().enumerate() {
+            let asset_id = format!("fmt-{i}");
+            store.asset_intake(&intake_args(&asset_id, kind)).unwrap();
+            let target = if *kind == "voice" {
+                "eigenstyle"
+            } else {
+                "lumen"
+            };
+            let body = store
+                .asset_route(&json!({"envelope": env_id("rec-route"),
+                    "project_id": "first-light", "asset_id": asset_id,
+                    "target": target, "purpose": "specialist work"}))
+                .unwrap();
+            assert_eq!(body["handoff_id"], format!("fmt-{i}-{target}"), "{kind}");
+        }
+        // Lessons and study routes record too.
+        store
+            .asset_route(&json!({"envelope": env_id("rec-route"),
+                "project_id": "first-light", "asset_id": "fmt-0",
+                "target": "bloch", "purpose": "lesson extraction"}))
+            .unwrap();
+        store
+            .asset_route(&json!({"envelope": env_id("rec-route"),
+                "project_id": "first-light", "asset_id": "fmt-0",
+                "target": "fathom", "purpose": "clean-room study"}))
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_route_refusals() {
+        let (store, root, _src) = ast_store("ast9");
+        store.asset_intake(&intake_args("one", "still_2d")).unwrap();
+        // Unknown target.
+        let err = store
+            .asset_route(&json!({"envelope": env_id("rec-route"),
+                "project_id": "first-light", "asset_id": "one",
+                "target": "nowhere", "purpose": "x"}))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        // Missing asset record.
+        let err = store
+            .asset_route(&json!({"envelope": env_id("rec-route"),
+                "project_id": "first-light", "asset_id": "ghost",
+                "target": "lumen", "purpose": "x"}))
+            .unwrap_err();
+        assert_eq!(err.code, "record_missing");
+        // Fathom claiming the asset itself.
+        let err = store
+            .asset_route(&json!({"envelope": env_id("rec-route"),
+                "project_id": "first-light", "asset_id": "one",
+                "target": "fathom", "purpose": "study", "mode": "asset"}))
+            .unwrap_err();
+        assert_eq!(err.code, "fathom_asset_refused");
         let _ = fs::remove_dir_all(&root);
     }
 }

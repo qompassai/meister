@@ -179,6 +179,7 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         "meister_emit" => store_result(store.emit(args)),
         "meister_asset_intake" => store_result(store.asset_intake(args)),
         "meister_asset_chain_get" => store_result(store.asset_chain_get(args)),
+        "meister_asset_route" => store_result(store.asset_route(args)),
         _ => seam_result(&spec),
     }
 }

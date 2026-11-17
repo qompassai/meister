@@ -957,6 +957,7 @@ pub fn specs() -> Vec<ToolSpec> {
                         s_enum(&["lumen", "eigenstyle", "bloch", "fathom"]),
                     ),
                     ("purpose", s()),
+                    ("mode", s_enum(&["spec", "asset"])),
                 ],
                 &["project_id", "asset_id", "target", "purpose"],
             ),
