@@ -666,6 +666,66 @@ fn chain_has_custody_node(chain: &Value) -> bool {
         .is_some_and(|ops| ops.iter().any(|op| op["human_touched"] == json!(true)))
 }
 
+/// The seven genesis defaults (AST-06): every project
+/// born with a genesis block names all seven; each starts
+/// `inherited` and the block is confirmed as a whole
+/// through `meister_verdict_record`.
+const GENESIS_KEYS: [&str; 7] = [
+    "platforms",
+    "release_model",
+    "outward_reference",
+    "language",
+    "art_audio_pipeline",
+    "accessibility_gate",
+    "packaging",
+];
+
+/// Validate a `genesis` argument at project birth
+/// (AST-06) and shape the stored block. Absent -> Null
+/// (no ledger; pre-genesis births and grandfathered
+/// projects carry none).
+fn genesis_block(args: &Value, project_id: &str) -> StoreResult<Value> {
+    let Some(raw) = args.get("genesis").filter(|v| !v.is_null()) else {
+        return Ok(Value::Null);
+    };
+    if !raw.is_object() {
+        return Err(StoreError::invalid_record("genesis must be an object"));
+    }
+    let kind = raw["kind"].as_str().unwrap_or("born");
+    if !["born", "adopted"].contains(&kind) {
+        return Err(StoreError::invalid_record(
+            "genesis kind must be born or adopted",
+        ));
+    }
+    let defaults = raw
+        .get("defaults")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| StoreError::invalid_record("genesis.defaults must be an object"))?;
+    let mut shaped = serde_json::Map::new();
+    for key in GENESIS_KEYS {
+        let value = defaults.get(key).filter(|v| !v.is_null()).ok_or_else(|| {
+            StoreError::invalid_record(format!("genesis default {key} is missing"))
+        })?;
+        shaped.insert(
+            key.to_string(),
+            json!({"value": value, "state": "inherited"}),
+        );
+    }
+    let record_id = raw["record_id"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("genesis-{project_id}"));
+    let mut block = json!({
+        "record_id": record_id,
+        "kind": kind,
+        "defaults": shaped,
+    });
+    if let Some(refs) = raw.get("ruling_refs") {
+        block["ruling_refs"] = refs.clone();
+    }
+    Ok(block)
+}
+
 impl Store {
     /// A store at an explicit root (tests, gate drivers).
     pub fn new(root: PathBuf) -> Self {
@@ -802,6 +862,7 @@ impl Store {
         };
         let secondary = secondary_packs(args, &genre_pack)?;
         let canon = canon_facts(args.get("canon"))?;
+        let genesis = genesis_block(args, &project_id)?;
         let envelope = args
             .get("envelope")
             .cloned()
@@ -824,6 +885,7 @@ impl Store {
             "status": "scaffolded",
             "envelope": envelope,
             "canon": canon,
+            "genesis": genesis,
             "created_by_tool": "meister_project_create",
             "server_version": env!("CARGO_PKG_VERSION"),
         });
@@ -858,6 +920,7 @@ impl Store {
             "content_label": record["envelope"]["content_label"],
             "status": record["status"],
             "cast_count": cast.len(),
+            "genesis": self.genesis_summary(&project_id, &record),
             "lifecycle": self.project_lifecycle(&project_id)?,
             "canon_fact_count": record["canon"].as_array().map_or(0, Vec::len),
             "project_path": self.project_dir(&project_id).display().to_string(),
@@ -1678,6 +1741,9 @@ impl Store {
         if project["envelope"]["record_id"].as_str() == Some(record_id) {
             return Some(project);
         }
+        if project["genesis"]["record_id"].as_str() == Some(record_id) {
+            return Some(project["genesis"].clone());
+        }
         for dir in RECORD_DIRS {
             for (_, record) in self
                 .read_family_records(project_id, dir)
@@ -1978,6 +2044,15 @@ impl Store {
             subject_ids.push(id.to_string());
         }
         self.read_project(&project_id)?;
+        if !self.genesis_confirmed(&project_id) {
+            return Err(StoreError::new(
+                "defaults_unconfirmed",
+                format!(
+                    "project {project_id} carries a genesis block that does not stand confirmed; \
+                     emit waits on the block's confirmation verdict"
+                ),
+            ));
+        }
         if !EMITTERS.contains(&emitter.as_str()) {
             return Err(StoreError::new(
                 "emitter_unknown",
@@ -2664,6 +2739,43 @@ channel = \"nightly-2026-10-30\"
                 "target": target,
                 "handoff_id": handoff_id,
             }),
+        })
+    }
+
+    /// Whether a project's genesis block stands confirmed:
+    /// the latest ruling on the block's own record id is
+    /// `adopt` (AST-06). No block -> not applicable
+    /// (returns true: nothing to confirm).
+    fn genesis_confirmed(&self, project_id: &str) -> bool {
+        let Ok(project) = self.read_project(project_id) else {
+            return true;
+        };
+        match project["genesis"]["record_id"].as_str() {
+            Some(rid) => {
+                self.latest_rulings(project_id).get(rid).map(String::as_str) == Some("adopt")
+            }
+            None => true,
+        }
+    }
+
+    /// The genesis summary `meister_project_inspect`
+    /// reports (AST-06): kind, confirmation, and the seven
+    /// defaults' values — or Null when the project carries
+    /// no block.
+    fn genesis_summary(&self, project_id: &str, record: &Value) -> Value {
+        let block = &record["genesis"];
+        if block.is_null() {
+            return Value::Null;
+        }
+        let mut defaults = serde_json::Map::new();
+        for key in GENESIS_KEYS {
+            defaults.insert(key.to_string(), block["defaults"][key]["value"].clone());
+        }
+        json!({
+            "record_id": block["record_id"],
+            "kind": block["kind"],
+            "confirmed": self.genesis_confirmed(project_id),
+            "defaults": defaults,
         })
     }
 
@@ -7888,6 +8000,101 @@ mod tests {
                 "target": "fathom", "purpose": "study", "mode": "asset"}))
             .unwrap_err();
         assert_eq!(err.code, "fathom_asset_refused");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- AST-06: genesis ledger ----------
+
+    fn genesis_arg() -> Value {
+        json!({"defaults": {
+            "platforms": ["linux", "android"],
+            "release_model": "free",
+            "outward_reference": "none",
+            "language": "en",
+            "art_audio_pipeline": "wai + kokoro",
+            "accessibility_gate": "estate",
+            "packaging": "owned-gradle",
+        }})
+    }
+
+    #[test]
+    fn genesis_block_is_born_inherited_and_read_back() {
+        let (store, root) = temp_store("ast10");
+        let mut a = create_args();
+        a["genesis"] = genesis_arg();
+        store.create_project(&a).unwrap();
+        let body = store
+            .inspect_project(&json!({"project_id": "first-light"}))
+            .unwrap();
+        assert_eq!(body["genesis"]["kind"], "born");
+        assert_eq!(body["genesis"]["confirmed"], false);
+        assert_eq!(body["genesis"]["defaults"]["packaging"], "owned-gradle");
+        assert_eq!(body["genesis"]["record_id"], "genesis-first-light");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_genesis_missing_default_is_named() {
+        let (store, root) = temp_store("ast11");
+        let mut a = create_args();
+        let mut g = genesis_arg();
+        g["defaults"].as_object_mut().unwrap().remove("packaging");
+        a["genesis"] = g;
+        let err = store.create_project(&a).unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        assert!(err.message.contains("packaging"), "{}", err.message);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn emit_waits_on_genesis_confirmation() {
+        let (store, root) = temp_store("ast12");
+        let source = source_file(&root);
+        let mut a = create_args();
+        a["genesis"] = genesis_arg();
+        store.create_project(&a).unwrap();
+        store.add_cast(&cast_args(&source)).unwrap();
+        store.lock_cast(&lock_args(&source)).unwrap();
+        frz_dialogue(&store);
+        let emit_root = root.join("emit-root");
+        fs::create_dir_all(&emit_root).unwrap();
+        let store = store.with_emit_root(emit_root);
+        // Freeze the dialogue; the genesis block is still
+        // unconfirmed, so emit refuses on the ledger.
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+        let args = emit_args("bevy-rust-content/1", "out", json!(["rec-dlg"]));
+        let err = store.emit(&args).unwrap_err();
+        assert_eq!(err.code, "defaults_unconfirmed");
+        // Confirm the block as a whole through a verdict.
+        store
+            .record_verdict(&verdict_args(
+                "pack-2",
+                "adopt",
+                json!([subject_now(&store, "first-light", "genesis-first-light")]),
+            ))
+            .unwrap();
+        let body = store
+            .inspect_project(&json!({"project_id": "first-light"}))
+            .unwrap();
+        assert_eq!(body["genesis"]["confirmed"], true);
+        store.emit(&args).unwrap();
+        // The ledger moves only through verdicts: a later
+        // send_back un-confirms it and emit refuses again.
+        store
+            .record_verdict(&verdict_args(
+                "pack-3",
+                "send_back",
+                json!([subject_now(&store, "first-light", "genesis-first-light")]),
+            ))
+            .unwrap();
+        let err = store.emit(&args).unwrap_err();
+        assert_eq!(err.code, "defaults_unconfirmed");
         let _ = fs::remove_dir_all(&root);
     }
 }
