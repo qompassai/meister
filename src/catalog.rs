@@ -252,6 +252,8 @@ pub const PROFILES: &[Profile] = &[
                 "meister_reaction_set",
                 "meister_story_define",
                 "meister_playtest_generate",
+                "meister_verdict_record",
+                "meister_emit",
             ],
         },
     },
@@ -518,7 +520,7 @@ pub fn check_declared_profiles() -> Result<(), ProfileError> {
     check_profiles(&tools, PROFILES)
 }
 
-/// The full catalog, in group order. Count: 31 tools (30 group
+/// The full catalog, in group order. Count: 33 tools (32 group
 /// seams + the live lane check). The >25 count carries its written
 /// reason in COMPLIANCE.md (Tiger Style MCP Rule 1).
 pub fn specs() -> Vec<ToolSpec> {
@@ -977,6 +979,34 @@ pub fn specs() -> Vec<ToolSpec> {
             ]),
             annotations: read_ann(),
         },
+        // ---- Freeze (Rung 3, FRZ-01): verdict records ----
+        ToolSpec {
+            name: "meister_verdict_record",
+            group: 8,
+            rung: 3,
+            record_carrying: true,
+            profiles: &[PROFILE_NARRATIVE],
+            description: "Record an Owner ruling on a numbered verdict pack: the subjects it pins, by record id and current hash, and the ruling. The server records rulings; it never authors them.",
+            input: record_input(
+                &[
+                    ("project_id", s()),
+                    ("pack_id", s()),
+                    ("decision_ref", s()),
+                    ("subjects", arr(free_obj())),
+                    ("ruling", s_enum(&["adopt", "send_back", "quarantine"])),
+                    ("notes", s()),
+                ],
+                &[
+                    "project_id",
+                    "pack_id",
+                    "decision_ref",
+                    "subjects",
+                    "ruling",
+                ],
+            ),
+            output: out_schema(&[("pack_id", s()), ("ruling", s()), ("subjects", integer())]),
+            annotations: write_ann(),
+        },
         // ---- Group 8: Playtest and QA (Rung 6) ----
         ToolSpec {
             name: "meister_playtest_define",
@@ -1031,6 +1061,30 @@ pub fn specs() -> Vec<ToolSpec> {
                 &["project_id", "defect_id", "summary", "state_ref"],
             ),
             output: out_schema(&[("defect_id", s()), ("status", s())]),
+            annotations: write_ann(),
+        },
+        // ---- Emit (Rung 3, EMT-01) ----
+        ToolSpec {
+            name: "meister_emit",
+            group: 5,
+            rung: 3,
+            record_carrying: true,
+            profiles: &[PROFILE_NARRATIVE],
+            description: "Emit frozen records through a named emitter into an emit-root directory: generated files plus an emit manifest with one SHA-256 per file. It never touches git.",
+            input: record_input(
+                &[
+                    ("project_id", s()),
+                    ("emitter", s()),
+                    ("subjects", arr(s())),
+                    ("out_dir", s()),
+                ],
+                &["project_id", "emitter", "subjects", "out_dir"],
+            ),
+            output: out_schema(&[
+                ("emitter", s()),
+                ("file_count", integer()),
+                ("out_dir", s()),
+            ]),
             annotations: write_ann(),
         },
         // ---- Group 9: Build and release handoff (Rung 8) ----
@@ -1196,7 +1250,7 @@ mod tests {
     #[test]
     fn catalog_is_complete_and_bounded() {
         let all = specs();
-        assert_eq!(all.len(), 31);
+        assert_eq!(all.len(), 33);
         // Every group 1..=10 carries at least two tools.
         for group in 1..=10u8 {
             let count = all.iter().filter(|s| s.group == group).count();
@@ -1206,7 +1260,7 @@ mod tests {
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 31);
+        assert_eq!(names.len(), 33);
         assert!(names.iter().all(|n| n.starts_with("meister_")));
     }
 
@@ -1339,12 +1393,12 @@ mod tests {
                 ("core", 4),
                 ("canon", 7),
                 ("systems", 8),
-                ("narrative", 9),
+                ("narrative", 11),
                 ("assets", 7),
                 ("qa", 10),
                 ("release", 10),
-                ("niflheim-floor", 13),
-                ("full", 31)
+                ("niflheim-floor", 15),
+                ("full", 33)
             ]
         );
         // Core is four tools, all read-only.
@@ -1361,6 +1415,10 @@ mod tests {
         for spec in specs() {
             let expected: &[&str] = match (spec.group, spec.name) {
                 (_, "meister_level_compose") | (3, _) => &[PROFILE_SYSTEMS],
+                // The Rung 3 freeze and emit tools join the
+                // narrative profile (its declaration says so),
+                // whatever their groups.
+                (_, "meister_verdict_record") => &[PROFILE_NARRATIVE],
                 (4 | 5, _) => &[PROFILE_NARRATIVE],
                 (7, _) => &[PROFILE_ASSETS],
                 (6 | 8, _) => &[PROFILE_QA],

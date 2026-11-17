@@ -144,7 +144,11 @@ fn discover_and_list_serve_the_full_annotated_surface() {
         "meister"
     );
     let tools = resps[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 31, "the full Rung 0 surface");
+    assert_eq!(
+        tools.len(),
+        33,
+        "the full surface (31 at Rung 0, 33 since Rung 3)"
+    );
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert_eq!(tool["inputSchema"]["type"], "object", "{name} input type");
@@ -783,12 +787,14 @@ const SYSTEMS_OWN: [&str; 4] = [
     "meister_scene_validate",
     "meister_system_define",
 ];
-const NARRATIVE_OWN: [&str; 5] = [
+const NARRATIVE_OWN: [&str; 7] = [
     "meister_dialogue_author",
     "meister_dialogue_get",
     "meister_playtest_generate",
     "meister_reaction_set",
     "meister_story_define",
+    "meister_verdict_record",
+    "meister_emit",
 ];
 const ASSETS_OWN: [&str; 3] = [
     "meister_asset_chain_get",

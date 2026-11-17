@@ -82,7 +82,15 @@ const MAX_RECORD_BYTES: u64 = 1_048_576;
 /// `project.json` beside them is the one record outside a
 /// directory. A rung that adds a record kind adds its directory
 /// here, and the state hash covers it from that moment.
-const RECORD_DIRS: &[&str] = &["cast", "systems", "scenes", "levels", "narrative"];
+const RECORD_DIRS: &[&str] = &[
+    "cast",
+    "systems",
+    "scenes",
+    "levels",
+    "narrative",
+    "verdicts",
+    "emissions",
+];
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
 /// Name of the cross-process lock file under the store root. The
@@ -461,10 +469,10 @@ fn dialogue_nodes(record: &Value) -> Vec<PlayNode> {
                     edges.push(target.to_string());
                 }
             }
-        } else if let Some(next) = lines.get(i + 1) {
-            if let Some(next_id) = next["id"].as_str() {
-                edges.push(next_id.to_string());
-            }
+        } else if let Some(next) = lines.get(i + 1)
+            && let Some(next_id) = next["id"].as_str()
+        {
+            edges.push(next_id.to_string());
         }
         let ending = edges.is_empty();
         nodes.push(PlayNode { id, edges, ending });
@@ -495,6 +503,12 @@ fn story_nodes(record: &Value) -> Vec<PlayNode> {
         nodes.push(PlayNode { id, edges, ending });
     }
     nodes
+}
+
+/// The canonical content hash of one record: the hash a
+/// verdict subject pins (FRZ-01).
+fn record_hash(record: &Value) -> String {
+    sha256_hex(canonical_json(record).as_bytes())
 }
 
 impl Store {
@@ -672,6 +686,7 @@ impl Store {
             "content_label": record["envelope"]["content_label"],
             "status": record["status"],
             "cast_count": cast.len(),
+            "lifecycle": self.project_lifecycle(&project_id)?,
             "canon_fact_count": record["canon"].as_array().map_or(0, Vec::len),
             "project_path": self.project_dir(&project_id).display().to_string(),
         }))
@@ -745,6 +760,7 @@ impl Store {
             .ok_or_else(|| StoreError::invalid_record("identity must be an object"))?;
         validate_identity(identity)?;
         let file = self.cast_file(&project_id, &character_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -806,6 +822,7 @@ impl Store {
             .filter(|v| v.is_object())
             .ok_or_else(|| StoreError::invalid_record("lock must be an object"))?;
         validate_lock(lock, &record["identity"])?;
+        self.assert_not_frozen(&project_id, &record)?;
         let lock_hash = sha256_hex(canonical_json(lock).as_bytes());
         if let Some(existing) = record.get("identity_lock").filter(|v| !v.is_null()) {
             if existing["lock_hash"].as_str() == Some(lock_hash.as_str()) {
@@ -870,6 +887,7 @@ impl Store {
         let flags = self.declared_flags(&project_id)?;
         validate_system_spec(&kind, spec, &flags)?;
         let file = self.system_file(&project_id, &system_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -984,6 +1002,7 @@ impl Store {
             .ok_or_else(|| StoreError::invalid_record("graph must be an object"))?;
         scene_graph_shape(graph)?;
         let file = self.scene_file(&project_id, &scene_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -1083,6 +1102,7 @@ impl Store {
         let floor_count = validate_descent_layout(layout, &dag_ids, &minigame_ids)?;
         validate_level_narrative(self, &project_id, layout, &triggers)?;
         let file = self.level_file(&project_id, &level_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -1140,6 +1160,7 @@ impl Store {
         validate_dialogue_lines(self, &project_id, &lines, &flags)?;
         let unlock = validate_unlock(args, &flags)?;
         let file = self.narrative_file(&project_id, &dialogue_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -1228,6 +1249,7 @@ impl Store {
         }
         let name = format!("reaction-{character_id}-{emotion}");
         let file = self.narrative_file(&project_id, &name);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -1279,6 +1301,7 @@ impl Store {
         validate_story_beats(self, &project_id, &beats, &flags)?;
         let unlock = validate_unlock(args, &flags)?;
         let file = self.narrative_file(&project_id, &arc_id);
+        self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
             return Err(StoreError::new(
                 "conflict",
@@ -1318,6 +1341,33 @@ impl Store {
     /// per path; a bound hit is reported with the coverage
     /// gathered so far. A graph over the node bound is
     /// refused before traversal (`playtest_bound_exceeded`).
+    /// Mark a traversed unit gated with the run that gated
+    /// it (FRZ-03). A sealed unit does not transition; an
+    /// already-gated unit keeps its first run id.
+    fn mark_unit_gated(&self, project_id: &str, graph_ref: &str, run_id: &str) -> StoreResult<()> {
+        let file = self.narrative_file(project_id, graph_ref);
+        let run_id = run_id.to_string();
+        self.mutate(|| {
+            let raw =
+                fs::read_to_string(&file).map_err(|e| StoreError::io(format!("read unit: {e}")))?;
+            let mut record: Value = serde_json::from_str(&raw)
+                .map_err(|e| StoreError::invalid_record(format!("unit record: {e}")))?;
+            if record["unit_state"].as_str() == Some("gated") {
+                return Ok(Planned {
+                    write: None,
+                    body: json!({}),
+                });
+            }
+            record["unit_state"] = json!("gated");
+            record["gated_run_id"] = json!(run_id);
+            Ok(Planned {
+                write: Some((file.clone(), record)),
+                body: json!({}),
+            })
+        })?;
+        Ok(())
+    }
+
     pub fn generate_playtest(&self, args: &Value) -> StoreResult<Value> {
         let project_id = arg_id(args, "project_id")?;
         let graph_ref = arg_id(args, "graph_ref")?;
@@ -1428,6 +1478,14 @@ impl Store {
                 .as_bytes()
             )[..12]
         );
+        // FRZ-03: a successful traversal gates an ungated
+        // unit (a sealed unit does not transition).
+        let frozen = record["envelope"]["record_id"]
+            .as_str()
+            .is_some_and(|id| self.is_frozen(&project_id, id));
+        if !frozen && record["unit_state"].as_str() != Some("gated") {
+            self.mark_unit_gated(&project_id, &graph_ref, &run_id)?;
+        }
         Ok(json!({
             "project_id": project_id,
             "graph_ref": graph_ref,
@@ -1438,6 +1496,274 @@ impl Store {
             "bound_hit": bound_hit,
             "run_id": run_id,
         }))
+    }
+
+    /// Find one record in a project by its envelope
+    /// record_id, scanning the project record and every
+    /// record family. Returns the record.
+    fn find_record_by_id(&self, project_id: &str, record_id: &str) -> Option<Value> {
+        let project = self.read_project(project_id).ok()?;
+        if project["envelope"]["record_id"].as_str() == Some(record_id) {
+            return Some(project);
+        }
+        for dir in RECORD_DIRS {
+            for (_, record) in self
+                .read_family_records(project_id, dir)
+                .unwrap_or_default()
+            {
+                if record["envelope"]["record_id"].as_str() == Some(record_id) {
+                    return Some(record);
+                }
+            }
+        }
+        None
+    }
+
+    /// The latest ruling standing on each subject record_id,
+    /// by verdict sequence (FRZ-01/FRZ-02): later rulings
+    /// supersede earlier ones, so a thaw is a later
+    /// send_back or quarantine on the same subject.
+    fn latest_rulings(&self, project_id: &str) -> std::collections::BTreeMap<String, String> {
+        let mut verdicts = self
+            .read_family_records(project_id, "verdicts")
+            .unwrap_or_default();
+        verdicts.sort_by_key(|(_, v)| v["seq"].as_u64().unwrap_or(0));
+        let mut map = std::collections::BTreeMap::new();
+        for (_, verdict) in verdicts {
+            if let (Some(ruling), Some(subjects)) =
+                (verdict["ruling"].as_str(), verdict["subjects"].as_array())
+            {
+                for subject in subjects {
+                    if let Some(id) = subject["record_id"].as_str() {
+                        map.insert(id.to_string(), ruling.to_string());
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    /// Whether a record currently stands frozen: the latest
+    /// ruling on it is `adopt` (FRZ-02).
+    fn is_frozen(&self, project_id: &str, record_id: &str) -> bool {
+        self.latest_rulings(project_id)
+            .get(record_id)
+            .map(String::as_str)
+            == Some("adopt")
+    }
+
+    /// Refuse when the given record stands frozen.
+    fn assert_not_frozen(&self, project_id: &str, record: &Value) -> StoreResult<()> {
+        if let Some(record_id) = record["envelope"]["record_id"].as_str()
+            && self.is_frozen(project_id, record_id)
+        {
+            return Err(StoreError::new(
+                "frozen_record",
+                format!(
+                    "record {record_id} stands adopted by verdict and is frozen; \
+                     a later verdict must thaw it before any edit"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse when the record already stored at `file`
+    /// stands frozen (the define-path half of FRZ-02: a
+    /// frozen record answers frozen_record, not conflict).
+    fn refuse_if_frozen_file(&self, project_id: &str, file: &Path) -> StoreResult<()> {
+        if file.exists()
+            && let Ok(raw) = fs::read_to_string(file)
+            && let Ok(record) = serde_json::from_str::<Value>(&raw)
+        {
+            self.assert_not_frozen(project_id, &record)?;
+        }
+        Ok(())
+    }
+
+    pub fn record_verdict(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_record_verdict(args))
+    }
+
+    /// `meister_verdict_record` (FRZ-01): record an Owner
+    /// ruling on a numbered verdict pack. Each subject is
+    /// pinned by record id and by the record's CURRENT
+    /// canonical hash — a pack assembled against an older
+    /// state of a subject is refused
+    /// (`verdict_hash_mismatch`), never silently re-pointed.
+    /// The server records rulings; it never authors them.
+    fn plan_record_verdict(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let pack_id = arg_id(args, "pack_id")?;
+        let decision_ref = req_text(args, "decision_ref", MAX_NAME_CHARS)?;
+        let ruling = req_text(args, "ruling", MAX_ID_CHARS)?;
+        if !["adopt", "send_back", "quarantine"].contains(&ruling.as_str()) {
+            return Err(StoreError::invalid(format!(
+                "ruling must be adopt, send_back or quarantine, not {ruling}"
+            )));
+        }
+        let subjects = args
+            .get("subjects")
+            .and_then(Value::as_array)
+            .ok_or_else(|| StoreError::invalid_record("subjects must be an array"))?;
+        if subjects.is_empty() {
+            return Err(StoreError::invalid_record(
+                "a verdict needs at least one subject",
+            ));
+        }
+        if subjects.len() > MAX_CHAIN_ENTRIES {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!(
+                    "{} subjects exceeds the bound of {MAX_CHAIN_ENTRIES}",
+                    subjects.len()
+                ),
+            ));
+        }
+        self.read_project(&project_id)?;
+        let mut pinned = Vec::new();
+        for subject in subjects {
+            let record_id = req_text(subject, "record_id", MAX_NAME_CHARS)?;
+            let sha = req_text(subject, "sha256", MAX_ID_CHARS)?;
+            if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(StoreError::invalid_record(format!(
+                    "subject {record_id}: sha256 must be 64 hex characters"
+                )));
+            }
+            let record = self
+                .find_record_by_id(&project_id, &record_id)
+                .ok_or_else(|| {
+                    StoreError::new(
+                        "subject_unknown",
+                        format!("no record {record_id} in {project_id}"),
+                    )
+                })?;
+            let current = record_hash(&record);
+            if current != sha.to_lowercase() {
+                return Err(StoreError::new(
+                    "verdict_hash_mismatch",
+                    format!(
+                        "subject {record_id}: the pack pins {sha} but the record now hashes {current}"
+                    ),
+                ));
+            }
+            pinned.push(json!({"record_id": record_id, "sha256": current}));
+        }
+        let dir = self.project_dir(&project_id).join("verdicts");
+        let file = dir.join(format!("{pack_id}.json"));
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("verdict pack {pack_id} already recorded in {project_id}"),
+            ));
+        }
+        let seq = self.read_family_records(&project_id, "verdicts")?.len() + 1;
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let notes = args.get("notes").and_then(Value::as_str).unwrap_or("");
+        let record = json!({
+            "record_type": "meister_verdict",
+            "schema_version": 1,
+            "project_id": project_id,
+            "pack_id": pack_id,
+            "decision_ref": decision_ref,
+            "ruling": ruling,
+            "subjects": pinned,
+            "notes": notes,
+            "seq": seq,
+            "envelope": envelope,
+            "status": "recorded",
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body: json!({
+                "project_id": project_id,
+                "pack_id": pack_id,
+                "ruling": ruling,
+                "subjects": pinned.len(),
+                "seq": seq,
+            }),
+        })
+    }
+
+    /// The project's lifecycle state, DERIVED at read from
+    /// what the store holds (FRZ-04) — never a stored field,
+    /// so no transition can occur without its event:
+    /// scaffolded (project record only), authoring (content,
+    /// nothing frozen, no emissions), frozen_slice (at
+    /// least one subject stands adopted), emitted (at
+    /// least one emission recorded).
+    fn project_lifecycle(&self, project_id: &str) -> StoreResult<String> {
+        if !self
+            .read_family_records(project_id, "emissions")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Ok("emitted".to_string());
+        }
+        if self
+            .latest_rulings(project_id)
+            .values()
+            .any(|r| r == "adopt")
+        {
+            return Ok("frozen_slice".to_string());
+        }
+        for dir in ["cast", "systems", "scenes", "levels", "narrative"] {
+            if !self
+                .read_family_records(project_id, dir)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                return Ok("authoring".to_string());
+            }
+        }
+        Ok("scaffolded".to_string())
+    }
+
+    /// Effective unit states across the project's scenes,
+    /// levels, dialogues and story arcs (FRZ-03): sealed
+    /// when the unit stands adopted, else its stored
+    /// unit_state (default ungated).
+    fn unit_state_counts(&self, project_id: &str) -> Value {
+        let rulings = self.latest_rulings(project_id);
+        let mut counts = std::collections::BTreeMap::from([
+            ("ungated", 0usize),
+            ("gated", 0usize),
+            ("sealed", 0usize),
+        ]);
+        for dir in ["scenes", "levels", "narrative"] {
+            for (_, record) in self
+                .read_family_records(project_id, dir)
+                .unwrap_or_default()
+            {
+                if !matches!(
+                    record["record_type"].as_str(),
+                    Some(
+                        "meister_scene"
+                            | "meister_level"
+                            | "meister_dialogue"
+                            | "meister_story_arc"
+                    )
+                ) {
+                    continue;
+                }
+                let state = match record["envelope"]["record_id"].as_str() {
+                    Some(id) if rulings.get(id).map(String::as_str) == Some("adopt") => "sealed",
+                    _ => match record["unit_state"].as_str() {
+                        Some("gated") => "gated",
+                        _ => "ungated",
+                    },
+                };
+                *counts.get_mut(state).unwrap() += 1;
+            }
+        }
+        json!({
+            "ungated": counts["ungated"],
+            "gated": counts["gated"],
+            "sealed": counts["sealed"],
+        })
     }
 
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
@@ -2386,6 +2712,7 @@ impl Census {
                 "duplicate_record_ids": duplicate_ids,
                 "system_records": systems.len(),
                 "sanitization_hits": sanitization_hits,
+                "unit_states": store.unit_state_counts(project_id),
             },
             "differentiation": differentiation,
             "checks": b.checks,
@@ -6007,6 +6334,194 @@ mod tests {
                                        "graph_ref": "huge"}))
             .unwrap_err();
         assert_eq!(err.code, "playtest_bound_exceeded");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- FRZ: verdicts, freeze, lifecycle ----------
+
+    fn env_id(id: &str) -> Value {
+        json!({"record_id": id, "origin_lane": "qompass",
+               "content_label": "sfw", "evidence": "frz test"})
+    }
+
+    fn subject_now(store: &Store, project_id: &str, record_id: &str) -> Value {
+        let record = store
+            .find_record_by_id(project_id, record_id)
+            .expect("subject exists");
+        json!({"record_id": record_id, "sha256": record_hash(&record)})
+    }
+
+    fn frz_dialogue(store: &Store) {
+        store
+            .author_dialogue(
+                &json!({"envelope": env_id("rec-dlg"), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "open", "speaker": "warden", "text": "State your business."}]}),
+            )
+            .unwrap();
+    }
+
+    fn verdict_args(pack: &str, ruling: &str, subjects: Value) -> Value {
+        json!({"envelope": env_id("rec-verdict"), "project_id": "first-light",
+               "pack_id": pack, "decision_ref": "D-TEST",
+               "ruling": ruling, "subjects": subjects})
+    }
+
+    #[test]
+    fn verdict_adopt_freezes_and_thaw_releases() {
+        let (bare, bare_root, _bare_src) = scaffolded("frz1-bare");
+        assert_eq!(
+            bare.inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "scaffolded"
+        );
+        let _ = fs::remove_dir_all(&bare_root);
+        let (store, root) = nar_store("frz1");
+        frz_dialogue(&store);
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "authoring"
+        );
+        let body = store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+        assert_eq!(body["subjects"], 1);
+        assert_eq!(body["seq"], 1);
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "frozen_slice"
+        );
+        // Frozen: the define path answers frozen_record.
+        let err = store
+            .author_dialogue(
+                &json!({"envelope": env_id("rec-dlg-2"), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "open", "speaker": "warden", "text": "Edited."}]}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "frozen_record");
+        // Thaw: a later send_back on the same subject.
+        store
+            .record_verdict(&verdict_args(
+                "pack-2",
+                "send_back",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap();
+        assert_eq!(
+            store
+                .inspect_project(&json!({"project_id": "first-light"}))
+                .unwrap()["lifecycle"],
+            "authoring"
+        );
+        // Thawed: the define path is back to its normal
+        // conflict.
+        let err = store
+            .author_dialogue(
+                &json!({"envelope": env_id("rec-dlg-2"), "project_id": "first-light",
+                "dialogue_id": "gate-words",
+                "lines": [{"id": "open", "speaker": "warden", "text": "Edited."}]}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "conflict");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_verdict_refusals() {
+        let (store, root) = nar_store("frz2");
+        frz_dialogue(&store);
+        // Stale hash: the pack was assembled against a state
+        // the record no longer has.
+        let err = store
+            .record_verdict(&verdict_args(
+                "pack-stale",
+                "adopt",
+                json!([{"record_id": "rec-dlg", "sha256": "0".repeat(64)}]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "verdict_hash_mismatch");
+        // Unknown subject.
+        let err = store
+            .record_verdict(&verdict_args(
+                "pack-unknown",
+                "adopt",
+                json!([{"record_id": "rec-nope", "sha256": "0".repeat(64)}]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "subject_unknown");
+        // Empty subject list.
+        let err = store
+            .record_verdict(&verdict_args("pack-empty", "adopt", json!([])))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        // A ruling outside the enum.
+        let err = store
+            .record_verdict(&verdict_args(
+                "pack-maybe",
+                "maybe",
+                json!([subject_now(&store, "first-light", "rec-dlg")]),
+            ))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn frozen_cast_record_refuses_the_lock() {
+        let (store, root) = temp_store("frz3");
+        let source = source_file(&root);
+        store.create_project(&create_args()).unwrap();
+        let mut a = cast_args(&source);
+        a["envelope"] = env_id("rec-cast-warden");
+        store.add_cast(&a).unwrap();
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-cast-warden")]),
+            ))
+            .unwrap();
+        let err = store.lock_cast(&lock_args(&source)).unwrap_err();
+        assert_eq!(err.code, "frozen_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn census_body(store: &Store) -> Value {
+        match store.canon_census(&json!({"project_id": "first-light"})) {
+            Ok(body) => body,
+            Err(e) => e.census.expect("census body rides the error"),
+        }
+    }
+
+    #[test]
+    fn unit_states_flow_ungated_gated_sealed() {
+        let (store, root) = slice_store("frz4");
+        let census = census_body(&store);
+        assert_eq!(census["counts"]["unit_states"]["ungated"], 1, "{census}");
+        store
+            .generate_playtest(&json!({"project_id": "first-light",
+                                       "graph_ref": "gate-arc"}))
+            .unwrap();
+        let census = census_body(&store);
+        assert_eq!(census["counts"]["unit_states"]["gated"], 1, "{census}");
+        store
+            .record_verdict(&verdict_args(
+                "pack-1",
+                "adopt",
+                json!([subject_now(&store, "first-light", "rec-1")]),
+            ))
+            .unwrap();
+        let census = census_body(&store);
+        assert_eq!(census["counts"]["unit_states"]["sealed"], 1, "{census}");
         let _ = fs::remove_dir_all(&root);
     }
 }

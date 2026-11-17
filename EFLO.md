@@ -20,12 +20,12 @@ hand; re-run the script.
 | `core` | 4 | 3,578 | **815** | within (1,685 under) |
 | `canon` | 7 | 7,219 | **1,636** | within (864 under) |
 | `systems` | 8 | 6,891 | **1,567** | within (933 under) |
-| `narrative` | 9 | 7,472 | **1,684** | within (816 under) |
+| `narrative` | 11 | 9,587 | **2,166** | within (334 under) |
 | `assets` | 7 | 6,238 | **1,432** | within (1,068 under) |
 | `qa` | 10 | 8,140 | **1,842** | within (658 under) |
 | `release` | 10 | 7,932 | **1,760** | within (740 under) |
-| `niflheim-floor` | 13 | 10,785 | **2,436** | within (64 under) |
-| `full` | 31 | 26,002 | **5,846** | OVER by 3,346 |
+| `niflheim-floor` | 15 | 12,900 | **2,918** | OVER by 418 |
+| `full` | 33 | 28,117 | **6,328** | OVER by 3,828 |
 
 Bytes are the UTF-8 length of the canonical array.
 
@@ -69,11 +69,13 @@ its tools by the array punctuation.
 | `meister_project_list` | 594 | 137 |
 | `meister_scene_validate` | 585 | 133 |
 
-### `narrative` — 9 tools, 1,684 tokens
+### `narrative` — 11 tools, 2,166 tokens
 
 | Tool | Bytes | Tokens |
 |---|---:|---:|
 | `meister_canon_check` | 1,193 | 275 |
+| `meister_verdict_record` | 1,121 | 256 |
+| `meister_emit` | 992 | 226 |
 | `meister_reaction_set` | 1,026 | 226 |
 | `meister_project_inspect` | 969 | 213 |
 | `meister_dialogue_author` | 882 | 199 |
@@ -125,12 +127,14 @@ its tools by the array punctuation.
 | `meister_preflight_run` | 587 | 131 |
 | `meister_channel_list` | 507 | 110 |
 
-### `niflheim-floor` — 13 tools, 2,436 tokens
+### `niflheim-floor` — 15 tools, 2,918 tokens
 
 | Tool | Bytes | Tokens |
 |---|---:|---:|
 | `meister_canon_check` | 1,193 | 275 |
+| `meister_verdict_record` | 1,121 | 256 |
 | `meister_system_define` | 1,010 | 233 |
+| `meister_emit` | 992 | 226 |
 | `meister_reaction_set` | 1,026 | 226 |
 | `meister_project_inspect` | 969 | 213 |
 | `meister_level_compose` | 903 | 203 |
@@ -143,15 +147,17 @@ its tools by the array punctuation.
 | `meister_playtest_generate` | 587 | 128 |
 | `meister_dialogue_get` | 544 | 121 |
 
-### `full` — 31 tools, 5,846 tokens
+### `full` — 33 tools, 6,328 tokens
 
 | Tool | Bytes | Tokens |
 |---|---:|---:|
 | `meister_project_create` | 1,621 | 376 |
 | `meister_canon_check` | 1,193 | 275 |
+| `meister_verdict_record` | 1,121 | 256 |
 | `meister_asset_route` | 1,030 | 243 |
 | `meister_asset_intake` | 1,014 | 241 |
 | `meister_system_define` | 1,010 | 233 |
+| `meister_emit` | 992 | 226 |
 | `meister_reaction_set` | 1,026 | 226 |
 | `meister_account_register` | 1,051 | 225 |
 | `meister_cast_lock` | 1,020 | 225 |
