@@ -176,6 +176,7 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         "meister_story_define" => store_result(store.define_story(args)),
         "meister_playtest_generate" => store_result(store.generate_playtest(args)),
         "meister_verdict_record" => store_result(store.record_verdict(args)),
+        "meister_emit" => store_result(store.emit(args)),
         _ => seam_result(&spec),
     }
 }
