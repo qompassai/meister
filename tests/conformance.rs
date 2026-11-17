@@ -192,12 +192,13 @@ fn lane_check_allows_sfw_qompass_over_the_wire() {
 
 #[test]
 fn sfw_envelope_reaches_the_seam() {
-    // A Group 4 seam (Rung 3): the allowed envelope still falls
-    // through the gate to the seam error, unchanged by Rung 1.
-    // (Group 3's tools all became real at Rung 2.)
+    // A Group 5 seam (until NAR-06 lands): the allowed envelope
+    // still falls through the gate to the seam error, unchanged
+    // by Rungs 1-3. (Group 3 became real at Rung 2, Group 4 at
+    // Rung 3.)
     let req = call(
         1,
-        "meister_dialogue_author",
+        "meister_playtest_generate",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
                            "project_id": "p1"}),
     );
@@ -971,10 +972,10 @@ fn in_profile_calls_run_under_their_profile() {
         &[&discover(), &inspect],
     );
     assert_eq!(result_json(&resps[1])["project_id"], "profile-game");
-    // The bundle carries Group 4: the call reaches its seam.
+    // The bundle carries Group 5: the call reaches its seam.
     let scene = call(
         1,
-        "meister_dialogue_author",
+        "meister_playtest_generate",
         serde_json::json!({"envelope": envelope("sfw", "qompass"),
                            "project_id": "profile-game"}),
     );

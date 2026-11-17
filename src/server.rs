@@ -170,6 +170,10 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         "meister_scene_define" => store_result(store.define_scene(args)),
         "meister_scene_validate" => store_result(store.validate_scene(args)),
         "meister_level_compose" => store_result(store.compose_level(args)),
+        "meister_dialogue_author" => store_result(store.author_dialogue(args)),
+        "meister_dialogue_get" => store_result(store.get_dialogue(args)),
+        "meister_reaction_set" => store_result(store.set_reaction(args)),
+        "meister_story_define" => store_result(store.define_story(args)),
         _ => seam_result(&spec),
     }
 }
@@ -270,12 +274,12 @@ mod tests {
 
     #[test]
     fn allowed_envelope_reaches_the_seam() {
-        // A Group 4 seam (Rung 3): the allowed envelope falls
-        // through the gate to the seam error, unchanged.
-        // (Group 3's tools all became real at Rung 2.)
+        // A Group 5 seam (until NAR-06 lands): the allowed
+        // envelope falls through the gate to the seam error,
+        // unchanged. (Groups 3 and 4 became real at Rungs 2-3.)
         let args = json!({"envelope": good_envelope(),
                           "project_id": "first-light"});
-        let result = call_tool(full(), "meister_dialogue_author", &args);
+        let result = call_tool(full(), "meister_playtest_generate", &args);
         assert!(result.is_error.unwrap_or(false));
         let body = result_json(&result);
         assert_eq!(body["error"]["code"], "not_implemented");
@@ -284,11 +288,11 @@ mod tests {
 
     #[test]
     fn in_profile_calls_dispatch_as_before() {
-        // narrative carries Group 4: the call reaches its seam.
+        // narrative carries Group 5: the call reaches its seam.
         let args = json!({"envelope": good_envelope(),
                           "project_id": "first-light"});
         for name in ["narrative", "niflheim-floor", "full"] {
-            let result = call_tool(profile(name), "meister_dialogue_author", &args);
+            let result = call_tool(profile(name), "meister_playtest_generate", &args);
             assert_eq!(
                 result_json(&result)["error"]["code"],
                 "not_implemented",
