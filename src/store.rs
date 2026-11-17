@@ -2253,19 +2253,17 @@ fn census_narrative_checks(
                 if record.get("record_type").and_then(Value::as_str) == Some("meister_dialogue")
                     && let Some(lines) = record.get("lines").and_then(Value::as_array)
                 {
-                        for (i, line) in lines.iter().enumerate() {
-                            if let Some(text) = line.get("text").and_then(Value::as_str) {
-                                fields.push((format!("lines[{i}].text"), text.to_string()));
-                            }
-                            if let Some(choices) = line.get("choices").and_then(Value::as_array) {
-                                for (j, choice) in choices.iter().enumerate() {
-                                    if let Some(label) = choice.get("label").and_then(Value::as_str)
-                                    {
-                                        fields.push((
-                                            format!("lines[{i}].choices[{j}].label"),
-                                            label.to_string(),
-                                        ));
-                                    }
+                    for (i, line) in lines.iter().enumerate() {
+                        if let Some(text) = line.get("text").and_then(Value::as_str) {
+                            fields.push((format!("lines[{i}].text"), text.to_string()));
+                        }
+                        if let Some(choices) = line.get("choices").and_then(Value::as_array) {
+                            for (j, choice) in choices.iter().enumerate() {
+                                if let Some(label) = choice.get("label").and_then(Value::as_str) {
+                                    fields.push((
+                                        format!("lines[{i}].choices[{j}].label"),
+                                        label.to_string(),
+                                    ));
                                 }
                             }
                         }
@@ -2274,19 +2272,17 @@ fn census_narrative_checks(
                 if record.get("record_type").and_then(Value::as_str) == Some("meister_story_arc")
                     && let Some(beats) = record.get("beats").and_then(Value::as_array)
                 {
-                        for (i, beat) in beats.iter().enumerate() {
-                            if let Some(title) = beat.get("title").and_then(Value::as_str) {
-                                fields.push((format!("beats[{i}].title"), title.to_string()));
-                            }
-                            if let Some(quests) = beat.get("quests").and_then(Value::as_array) {
-                                for (j, quest) in quests.iter().enumerate() {
-                                    if let Some(title) = quest.get("title").and_then(Value::as_str)
-                                    {
-                                        fields.push((
-                                            format!("beats[{i}].quests[{j}].title"),
-                                            title.to_string(),
-                                        ));
-                                    }
+                    for (i, beat) in beats.iter().enumerate() {
+                        if let Some(title) = beat.get("title").and_then(Value::as_str) {
+                            fields.push((format!("beats[{i}].title"), title.to_string()));
+                        }
+                        if let Some(quests) = beat.get("quests").and_then(Value::as_array) {
+                            for (j, quest) in quests.iter().enumerate() {
+                                if let Some(title) = quest.get("title").and_then(Value::as_str) {
+                                    fields.push((
+                                        format!("beats[{i}].quests[{j}].title"),
+                                        title.to_string(),
+                                    ));
                                 }
                             }
                         }
@@ -5051,11 +5047,10 @@ mod tests {
             .unwrap_err();
         let body = err.census.expect("census body rides the refusal");
         assert!(
-            body["failures"]
-                .as_array()
+            body["failures"].as_array().unwrap().iter().any(|f| f
+                .as_str()
                 .unwrap()
-                .iter()
-                .any(|f| f.as_str().unwrap().contains("differentiation:warden:warden-twin")),
+                .contains("differentiation:warden:warden-twin")),
             "the collision is a named failure: {body}"
         );
         let pairs = body["differentiation"].as_array().unwrap();
