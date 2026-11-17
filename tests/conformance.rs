@@ -505,6 +505,74 @@ fn rung1_tampered_source_fails_the_census_over_the_wire() {
     let _ = std::fs::remove_dir_all(&store);
 }
 
+#[test]
+fn sys_a_kinds_work_over_the_wire() {
+    let store = fresh_store();
+    let source = fixture_file("sysa");
+    let _ = wire_create(&store, &source);
+    let define = |id: i64, system_id: &str, kind: &str, spec: serde_json::Value| {
+        let mut args = serde_json::json!({"envelope": envelope("sfw", "qompass"),
+            "project_id": "wire-game", "system_id": system_id,
+            "kind": kind, "spec": spec});
+        args["envelope"]["record_id"] = serde_json::json!(format!("rec-wire-{system_id}"));
+        call(id, "meister_system_define", args)
+    };
+    // Flags first: guards name the declared-flag namespace.
+    let flags = define(
+        2,
+        "core-flags",
+        "flags",
+        serde_json::json!({"flags": [
+            {"id": "met-warden", "type": "bool", "initial": false},
+            {"id": "depth", "type": "int", "initial": 1, "min": 0, "max": 12}
+        ]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &flags]);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["status"], "candidate", "flags body: {body}");
+    assert!(store.join("wire-game/systems/core-flags.json").is_file());
+    // A state machine whose guard references the declared flag.
+    let machine = define(
+        3,
+        "chamber",
+        "state_machine",
+        serde_json::json!({"states": ["sealed", "open", "cleared"],
+        "initial": "sealed", "terminal": ["cleared"],
+        "transitions": [
+            {"from": "sealed", "to": "open", "guard": "met-warden"},
+            {"from": "open", "to": "cleared"}
+        ]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &machine]);
+    assert_eq!(result_json(&resps[1])["kind"], "state_machine");
+    // A float economy amount is economy_float over the wire.
+    let economy = define(
+        4,
+        "market",
+        "economy",
+        serde_json::json!({"currencies": [{"id": "gold", "min": 0, "max": 99}],
+            "sources": [{"currency": "gold", "amount": 2.5}]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &economy]);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "economy_float", "body: {body}");
+    assert!(!store.join("wire-game/systems/market.json").exists());
+    // A progression cycle is graph_cycle over the wire.
+    let dag = define(
+        5,
+        "descent",
+        "progression_dag",
+        serde_json::json!({"nodes": [
+            {"id": "a", "requires": ["b"]},
+            {"id": "b", "requires": ["a"]}
+        ]}),
+    );
+    let resps = rpc_store(&std::env::temp_dir(), &store, &[&discover(), &dag]);
+    let body = result_json(&resps[1]);
+    assert_eq!(body["error"]["code"], "graph_cycle", "body: {body}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
 /// Build the locked wire project and return its passing census.
 fn wire_locked_project(store: &std::path::Path, source: &std::path::Path) -> serde_json::Value {
     let _ = wire_create(store, source);

@@ -153,7 +153,8 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
     if !profile.serves(&spec) {
         return group_not_loaded(&spec, profile);
     }
-    // Rung 1: Groups 1–2 are real. Every other group stays a seam.
+    // Rung 1 made Groups 1–2 real; Rung 2 adds system_define
+    // (SYS-02..07). Every other unlisted group stays a seam.
     let store = Store::from_env();
     match name {
         "meister_project_create" => store_result(store.create_project(args)),
@@ -162,6 +163,7 @@ fn call_tool(profile: &Profile, name: &str, args: &Value) -> CallToolResult {
         "meister_cast_add" => store_result(store.add_cast(args)),
         "meister_cast_lock" => store_result(store.lock_cast(args)),
         "meister_canon_check" => store_result(store.canon_census(args)),
+        "meister_system_define" => store_result(store.define_system(args)),
         _ => seam_result(&spec),
     }
 }

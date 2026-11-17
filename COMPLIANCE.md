@@ -40,13 +40,16 @@ six Group 1–2 tools and `meister_lane_check` (§4). The Group
 store (`src/store.rs`): project scaffolding with genre pack
 selection at birth and canon facts carried from birth; cast
 identity records with the estate's canon governance and
-identity locks (D-1410); and the canon census, graduated
+identity locks (D-1410); game-systems records of six kinds
+(schedule, flags, progression DAG, economy, state machine,
+minigame), each validated per kind at define time (SYS-02..07,
+Rung 2); and the canon census, graduated
 server-side from the lumen pipes' census — every census claim
 recomputed from its source artifact and SHA-256 (D-713), the
 census failing closed on any unverified claim. Since STORE-02
 (Rung 2) the census also reports a `state_hash` over the
 canonical record state and a `stale` flag (§5). The remaining
-24 tools are typed seams — each returns a structured
+23 tools are typed seams — each returns a structured
 `not_implemented` tool error naming the tool, its group, and
 the rung that makes it real.
 
@@ -226,6 +229,20 @@ against the adopted Niflheim store on landing: 55 checked /
 3 unverified, the three records still carrying the Rung 1
 gate scaffold's shared record_id (an Owner decision, filed in
 the night DECISIONS.md; the store itself was not modified).
+
+SYS-01..07 add the systems codes: `bound_exceeded` (a graph or
+collection crossed its contract bound, refused before any
+traversal), `graph_cycle`, `graph_unreachable`, and
+`graph_dangling_ref` (the shared graph validator, SYS-01);
+`flag_duplicate`, `state_undeclared`, and `flag_undeclared`
+(the kind contracts); and `economy_float` and
+`economy_unbounded` (the economy kind: integers only, every
+value bounded). `meister_system_define` is real since Rung 2;
+its served definition is unchanged from birth (sha256
+983c608e…), so no successor record is owed — the records law
+keys successors to definition changes. The census counts gain
+`system_records`, its record-id claims extend to system
+records, and it verifies minigame judge references (SYS-07).
 
 ## 6. Resources, prompts, other surfaces
 

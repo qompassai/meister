@@ -48,6 +48,8 @@
 //! A census whose recorded hash no longer matches the project is
 //! stale: it describes a state that is gone.
 
+use crate::graph::{self, GraphError};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -80,7 +82,7 @@ const MAX_RECORD_BYTES: u64 = 1_048_576;
 /// `project.json` beside them is the one record outside a
 /// directory. A rung that adds a record kind adds its directory
 /// here, and the state hash covers it from that moment.
-const RECORD_DIRS: &[&str] = &["cast"];
+const RECORD_DIRS: &[&str] = &["cast", "systems"];
 const MAX_SOURCE_BYTES: u64 = 33_554_432;
 
 /// Name of the cross-process lock file under the store root. The
@@ -222,6 +224,12 @@ impl Store {
 
     fn project_file(&self, project_id: &str) -> PathBuf {
         self.project_dir(project_id).join("project.json")
+    }
+
+    fn system_file(&self, project_id: &str, system_id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join("systems")
+            .join(format!("{system_id}.json"))
     }
 
     fn cast_file(&self, project_id: &str, character_id: &str) -> PathBuf {
@@ -489,6 +497,111 @@ impl Store {
     /// unverified claims in the code returned: the caller's frame
     /// of reference is wrong before any single claim is. The body
     /// carries both facts either way.
+    /// `meister_system_define`: author one game-systems record
+    /// (SYS-02..07). The spec is validated per kind before
+    /// anything is written; the record is born `candidate` in
+    /// the project's `systems/` family. Redefinition is a
+    /// conflict, never an overwrite.
+    pub fn define_system(&self, args: &Value) -> StoreResult<Value> {
+        self.mutate(|| self.plan_define_system(args))
+    }
+
+    fn plan_define_system(&self, args: &Value) -> StoreResult<Planned> {
+        let project_id = arg_id(args, "project_id")?;
+        let system_id = arg_id(args, "system_id")?;
+        self.read_project(&project_id)?;
+        let kind = req_text(args, "kind", MAX_ID_CHARS)?;
+        if !SYSTEM_KINDS.contains(&kind.as_str()) {
+            return Err(StoreError::invalid(format!("unknown system kind {kind}")));
+        }
+        let spec = args
+            .get("spec")
+            .filter(|v| v.is_object())
+            .ok_or_else(|| StoreError::invalid_record("spec must be an object"))?;
+        let flags = self.declared_flags(&project_id)?;
+        validate_system_spec(&kind, spec, &flags)?;
+        let file = self.system_file(&project_id, &system_id);
+        if file.exists() {
+            return Err(StoreError::new(
+                "conflict",
+                format!("system {system_id} already exists in {project_id}"),
+            ));
+        }
+        let envelope = args
+            .get("envelope")
+            .cloned()
+            .ok_or_else(|| StoreError::invalid("envelope is required"))?;
+        let record = json!({
+            "record_type": "meister_system",
+            "schema_version": 1,
+            "project_id": project_id,
+            "system_id": system_id,
+            "kind": kind,
+            "status": "candidate",
+            "envelope": envelope,
+            "spec": spec,
+        });
+        let body = json!({
+            "project_id": project_id,
+            "system_id": system_id,
+            "kind": kind,
+            "status": "candidate",
+            "record_path": file.display().to_string(),
+        });
+        Ok(Planned {
+            write: Some((file, record)),
+            body,
+        })
+    }
+
+    /// The project's system records as (relative path, record),
+    /// sorted by path: the census's view of the `systems/` family.
+    fn read_system_records(&self, project_id: &str) -> StoreResult<Vec<(String, Value)>> {
+        let dir = self.project_dir(project_id).join("systems");
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StoreError::io(format!("cannot list systems: {e}"))),
+        };
+        let mut records = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| StoreError::io(format!("systems entry: {e}")))?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if records.len() >= MAX_CAST_PER_PROJECT {
+                return Err(StoreError::io("systems exceed the per-project bound"));
+            }
+            if let Some(record) = read_json_file(&path)? {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                records.push((format!("systems/{name}"), record));
+            }
+        }
+        records.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(records)
+    }
+
+    /// Every flag id declared by the project's `flags` systems:
+    /// the namespace state-machine guards and schedule events
+    /// must name (SYS-03, SYS-06).
+    fn declared_flags(&self, project_id: &str) -> StoreResult<BTreeSet<String>> {
+        let mut flags = BTreeSet::new();
+        for (_, record) in self.read_system_records(project_id)? {
+            if record["kind"].as_str() != Some("flags") {
+                continue;
+            }
+            if let Some(list) = record["spec"]["flags"].as_array() {
+                for flag in list {
+                    if let Some(id) = flag["id"].as_str() {
+                        flags.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        Ok(flags)
+    }
+
     pub fn canon_census(&self, args: &Value) -> StoreResult<Value> {
         let project_id = arg_id(args, "project_id")?;
         let prior = match args.get("prior_state_hash") {
@@ -1396,8 +1509,10 @@ impl Census {
             governing_refs += g;
             chain_entries += m;
         }
+        let systems = store.read_system_records(project_id)?;
         let (references, duplicate_ids) =
-            census_references(&mut b, store, project_id, &project, &cast);
+            census_references(&mut b, store, project_id, &project, &cast, &systems);
+        census_systems(&mut b, &project_dir, &systems);
         let stale_reason = staleness(&state_hash, &store.state_hash(project_id)?, prior);
         let stale = stale_reason.is_some();
         let stale_reason = stale_reason.unwrap_or_default();
@@ -1425,6 +1540,7 @@ impl Census {
                 "media_chain_entries": chain_entries,
                 "references_checked": references,
                 "duplicate_record_ids": duplicate_ids,
+                "system_records": systems.len(),
             },
             "checks": b.checks,
             "failures": b.failures,
@@ -1489,6 +1605,7 @@ fn census_references(
     project_id: &str,
     project: &Value,
     cast: &[Value],
+    extra: &[(String, Value)],
 ) -> (usize, usize) {
     let project_dir = store.project_dir(project_id);
     // Record-id uniqueness across the project's records.
@@ -1512,6 +1629,13 @@ fn census_references(
             holders.entry(id.clone()).or_default().push(rel.clone());
         }
         records.push((rel, id));
+    }
+    for (rel, record) in extra {
+        let id = record["envelope"]["record_id"].as_str().map(str::to_string);
+        if let Some(id) = &id {
+            holders.entry(id.clone()).or_default().push(rel.clone());
+        }
+        records.push((rel.clone(), id));
     }
     let duplicate_ids = holders.values().filter(|v| v.len() > 1).count();
     for (rel, id) in &records {
@@ -1618,6 +1742,477 @@ fn census_references(
         }
     }
     (references, duplicate_ids)
+}
+
+/// The six system kinds (SYS-02..07), matching the catalog's
+/// `meister_system_define` kind enum.
+const SYSTEM_KINDS: &[&str] = &[
+    "schedule",
+    "flags",
+    "progression_dag",
+    "economy",
+    "state_machine",
+    "minigame",
+];
+
+const MAX_FLAGS: usize = 1_024;
+const MAX_STATES: usize = 128;
+const MAX_TRANSITIONS: usize = 1_024;
+const MAX_EVENTS: usize = 1_024;
+const MAX_ECONOMY_ENTRIES: usize = 512;
+const MAX_FLOWS: usize = 1_024;
+const MAX_MINIGAME_INPUTS: usize = 64;
+
+/// A graph refusal as a store refusal, code intact.
+fn graph_guard(result: Result<(), GraphError>) -> StoreResult<()> {
+    result.map_err(|e| StoreError::new(e.code(), e.message()))
+}
+
+/// An integer field of a spec object. Floats are refused as
+/// floats: JSON numbers that are not integers never coerce.
+fn spec_int(obj: &Value, field: &str, what: &str) -> StoreResult<i64> {
+    match obj.get(field) {
+        Some(Value::Number(n)) => n.as_i64().ok_or_else(|| {
+            StoreError::invalid_record(format!("{what} {field} must be an integer, not a float"))
+        }),
+        Some(_) => Err(StoreError::invalid_record(format!(
+            "{what} {field} must be an integer"
+        ))),
+        None => Err(StoreError::invalid_record(format!(
+            "{what} needs an integer {field}"
+        ))),
+    }
+}
+
+/// Validate one system spec against its kind's contract. `flags`
+/// is the project's declared-flag namespace (SYS-02 records),
+/// which guards and schedule events must name.
+fn validate_system_spec(kind: &str, spec: &Value, flags: &BTreeSet<String>) -> StoreResult<()> {
+    match kind {
+        "flags" => validate_flags_spec(spec),
+        "state_machine" => validate_state_machine_spec(spec, flags),
+        "progression_dag" => validate_dag_spec(spec),
+        "economy" => validate_economy_spec(spec),
+        "schedule" => validate_schedule_spec(spec, flags),
+        "minigame" => validate_minigame_spec(spec),
+        _ => Err(StoreError::invalid(format!("unknown system kind {kind}"))),
+    }
+}
+
+/// SYS-02 — declared flags: `id`, `type` in {bool, int},
+/// `initial`, and integer bounds for `int` flags.
+fn validate_flags_spec(spec: &Value) -> StoreResult<()> {
+    let list = req_arr(spec, "flags", MAX_FLAGS)?;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for flag in list {
+        let id = valid_id(&req_text(flag, "id", MAX_ID_CHARS)?)?;
+        if !seen.insert(id.clone()) {
+            return Err(StoreError::new(
+                "flag_duplicate",
+                format!("flag {id} is declared twice"),
+            ));
+        }
+        match req_text(flag, "type", MAX_ID_CHARS)?.as_str() {
+            "bool" => {
+                if !flag["initial"].is_boolean() {
+                    return Err(StoreError::invalid_record(format!(
+                        "bool flag {id} needs a boolean initial"
+                    )));
+                }
+            }
+            "int" => {
+                let what = format!("int flag {id}");
+                let min = spec_int(flag, "min", &what)?;
+                let max = spec_int(flag, "max", &what)?;
+                let initial = spec_int(flag, "initial", &what)?;
+                if min > max {
+                    return Err(StoreError::invalid_record(format!(
+                        "int flag {id} has min {min} above max {max}"
+                    )));
+                }
+                if initial < min || initial > max {
+                    return Err(StoreError::invalid_record(format!(
+                        "int flag {id} initial {initial} is outside [{min}, {max}]"
+                    )));
+                }
+            }
+            other => {
+                return Err(StoreError::invalid_record(format!(
+                    "flag {id} has unknown type {other}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// SYS-03 — a state machine: declared states, an initial state,
+/// terminal states, and transitions whose endpoints are declared
+/// and whose guards name declared flags. Every non-terminal
+/// state must be reachable from the initial state.
+fn validate_state_machine_spec(spec: &Value, flags: &BTreeSet<String>) -> StoreResult<()> {
+    let raw_states = req_arr(spec, "states", MAX_STATES)?;
+    let mut states: Vec<String> = Vec::new();
+    for state in raw_states {
+        let raw = state
+            .as_str()
+            .ok_or_else(|| StoreError::invalid_record("states must be id strings"))?;
+        let id = valid_id(raw)?;
+        if states.contains(&id) {
+            return Err(StoreError::invalid_record(format!(
+                "state {id} is declared twice"
+            )));
+        }
+        states.push(id);
+    }
+    if states.is_empty() {
+        return Err(StoreError::invalid_record(
+            "a state machine declares at least one state",
+        ));
+    }
+    let initial = valid_id(&req_text(spec, "initial", MAX_ID_CHARS)?)?;
+    if !states.contains(&initial) {
+        return Err(StoreError::new(
+            "state_undeclared",
+            format!("initial state {initial} is not a declared state"),
+        ));
+    }
+    let mut terminal: BTreeSet<String> = BTreeSet::new();
+    if let Some(list) = spec.get("terminal") {
+        let list = list
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("terminal must be an array of state ids"))?;
+        for state in list {
+            let raw = state
+                .as_str()
+                .ok_or_else(|| StoreError::invalid_record("terminal must be id strings"))?;
+            let id = valid_id(raw)?;
+            if !states.contains(&id) {
+                return Err(StoreError::new(
+                    "state_undeclared",
+                    format!("terminal state {id} is not a declared state"),
+                ));
+            }
+            terminal.insert(id);
+        }
+    }
+    let transitions = req_arr(spec, "transitions", MAX_TRANSITIONS)?;
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for transition in transitions {
+        let from = valid_id(&req_text(transition, "from", MAX_ID_CHARS)?)?;
+        let to = valid_id(&req_text(transition, "to", MAX_ID_CHARS)?)?;
+        for (role, id) in [("from", &from), ("to", &to)] {
+            if !states.contains(id) {
+                return Err(StoreError::new(
+                    "state_undeclared",
+                    format!("transition {role} names undeclared state {id}"),
+                ));
+            }
+        }
+        if let Some(guard) = transition.get("guard") {
+            let guard = guard.as_str().ok_or_else(|| {
+                StoreError::invalid_record("a transition guard must be a flag id string")
+            })?;
+            if !flags.contains(guard) {
+                return Err(StoreError::new(
+                    "flag_undeclared",
+                    format!("transition guard names undeclared flag {guard}"),
+                ));
+            }
+        }
+        edges.push((from, to));
+    }
+    let roots = std::slice::from_ref(&initial);
+    graph_guard(graph::validate(&states, &edges, roots, false, false))?;
+    let seen = graph::reachable(&states, &edges, roots);
+    let lost: Vec<&str> = states
+        .iter()
+        .filter(|s| !seen.contains(*s) && !terminal.contains(*s))
+        .map(String::as_str)
+        .collect();
+    if !lost.is_empty() {
+        return Err(StoreError::new(
+            "graph_unreachable",
+            format!("states unreachable from {initial}: {}", lost.join(", ")),
+        ));
+    }
+    Ok(())
+}
+
+/// SYS-04 — a progression DAG: unlock nodes with prerequisites.
+/// Prerequisites must be declared, the graph must be acyclic,
+/// and every node must be reachable from a root (declared via
+/// `roots`, or the prerequisite-free nodes when undeclared).
+fn validate_dag_spec(spec: &Value) -> StoreResult<()> {
+    let list = req_arr(spec, "nodes", graph::MAX_NODES)?;
+    let mut ids: Vec<String> = Vec::new();
+    for node in list {
+        let id = valid_id(&req_text(node, "id", MAX_ID_CHARS)?)?;
+        if ids.contains(&id) {
+            return Err(StoreError::invalid_record(format!(
+                "node {id} is declared twice"
+            )));
+        }
+        ids.push(id);
+    }
+    // Edges point prerequisite -> dependent, the direction in
+    // which reachability flows.
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for node in list {
+        let id = req_text(node, "id", MAX_ID_CHARS)?;
+        if let Some(requires) = node.get("requires") {
+            let requires = requires.as_array().ok_or_else(|| {
+                StoreError::invalid_record("requires must be an array of node ids")
+            })?;
+            for req in requires {
+                let req = req.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("requires entries must be node id strings")
+                })?;
+                edges.push((req.to_string(), id.clone()));
+            }
+        }
+    }
+    let roots: Vec<String> = match spec.get("roots") {
+        Some(list) => {
+            let list = list
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record("roots must be an array of node ids"))?;
+            let mut roots = Vec::new();
+            for root in list {
+                let raw = root.as_str().ok_or_else(|| {
+                    StoreError::invalid_record("roots entries must be node id strings")
+                })?;
+                roots.push(valid_id(raw)?);
+            }
+            roots
+        }
+        None => ids
+            .iter()
+            .filter(|id| !edges.iter().any(|(_, to)| to == *id))
+            .cloned()
+            .collect(),
+    };
+    graph_guard(graph::validate(&ids, &edges, &roots, true, true))
+}
+
+/// An economy amount or bound (SYS-05). A float is its own
+/// refusal: the combat law is integers and booleans, no floats.
+fn economy_int(obj: &Value, field: &str, what: &str) -> StoreResult<i64> {
+    match obj.get(field) {
+        Some(Value::Number(n)) => n.as_i64().ok_or_else(|| {
+            StoreError::new(
+                "economy_float",
+                format!("{what} {field} must be an integer; floats are refused"),
+            )
+        }),
+        Some(_) => Err(StoreError::invalid_record(format!(
+            "{what} {field} must be an integer"
+        ))),
+        None => Err(StoreError::invalid_record(format!(
+            "{what} needs an integer {field}"
+        ))),
+    }
+}
+
+/// A declared economy bound: absent is `economy_unbounded`.
+fn economy_bound(obj: &Value, field: &str, what: &str) -> StoreResult<i64> {
+    match obj.get(field) {
+        None => Err(StoreError::new(
+            "economy_unbounded",
+            format!("{what} declares no {field} bound; economy values are bounded integers"),
+        )),
+        Some(Value::Number(n)) => n.as_i64().ok_or_else(|| {
+            StoreError::new(
+                "economy_float",
+                format!("{what} {field} must be an integer; floats are refused"),
+            )
+        }),
+        Some(_) => Err(StoreError::invalid_record(format!(
+            "{what} {field} must be an integer"
+        ))),
+    }
+}
+
+/// SYS-05 — an economy: currencies and resources with declared
+/// integer bounds, and sources/sinks flowing declared ids in
+/// integer amounts. Integers only.
+fn validate_economy_spec(spec: &Value) -> StoreResult<()> {
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    for family in ["currencies", "resources"] {
+        if let Some(list) = spec.get(family) {
+            let list = list
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record(format!("{family} must be an array")))?;
+            if list.len() > MAX_ECONOMY_ENTRIES {
+                return Err(StoreError::new(
+                    "bound_exceeded",
+                    format!("{family} exceeds the bound of {MAX_ECONOMY_ENTRIES}"),
+                ));
+            }
+            for entry in list {
+                let id = valid_id(&req_text(entry, "id", MAX_ID_CHARS)?)?;
+                if !declared.insert(id.clone()) {
+                    return Err(StoreError::invalid_record(format!(
+                        "economy id {id} is declared twice"
+                    )));
+                }
+                let what = format!("economy entry {id}");
+                let min = economy_bound(entry, "min", &what)?;
+                let max = economy_bound(entry, "max", &what)?;
+                if min > max {
+                    return Err(StoreError::invalid_record(format!(
+                        "economy entry {id} has min {min} above max {max}"
+                    )));
+                }
+            }
+        }
+    }
+    if declared.is_empty() {
+        return Err(StoreError::invalid_record(
+            "an economy declares at least one currency or resource",
+        ));
+    }
+    for family in ["sources", "sinks"] {
+        if let Some(list) = spec.get(family) {
+            let list = list
+                .as_array()
+                .ok_or_else(|| StoreError::invalid_record(format!("{family} must be an array")))?;
+            if list.len() > MAX_FLOWS {
+                return Err(StoreError::new(
+                    "bound_exceeded",
+                    format!("{family} exceeds the bound of {MAX_FLOWS}"),
+                ));
+            }
+            for flow in list {
+                let target = req_text(flow, "currency", MAX_ID_CHARS)?;
+                if !declared.contains(&target) {
+                    return Err(StoreError::invalid_record(format!(
+                        "{family} entry names undeclared currency {target}"
+                    )));
+                }
+                economy_int(flow, "amount", &format!("{family} entry for {target}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// SYS-06 — a schedule: time-ordered events over integer ticks.
+/// Each event names a declared flag condition and an effect;
+/// exclusive events may not share a tick.
+fn validate_schedule_spec(spec: &Value, flags: &BTreeSet<String>) -> StoreResult<()> {
+    let events = req_arr(spec, "events", MAX_EVENTS)?;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut last_tick: Option<i64> = None;
+    let mut exclusive: BTreeMap<i64, String> = BTreeMap::new();
+    for event in events {
+        let id = valid_id(&req_text(event, "id", MAX_ID_CHARS)?)?;
+        if !seen.insert(id.clone()) {
+            return Err(StoreError::invalid_record(format!(
+                "event {id} is declared twice"
+            )));
+        }
+        let tick = spec_int(event, "tick", &format!("event {id}"))?;
+        if tick < 0 {
+            return Err(StoreError::invalid_record(format!(
+                "event {id} has negative tick {tick}"
+            )));
+        }
+        if let Some(last) = last_tick
+            && tick < last
+        {
+            return Err(StoreError::invalid_record(format!(
+                "events must be time-ordered: event {id} at tick {tick} follows tick {last}"
+            )));
+        }
+        last_tick = Some(tick);
+        let flag = req_text(event, "flag", MAX_ID_CHARS)?;
+        if !flags.contains(&flag) {
+            return Err(StoreError::new(
+                "flag_undeclared",
+                format!("event {id} names undeclared flag {flag}"),
+            ));
+        }
+        req_text(event, "effect", MAX_TEXT_CHARS)?;
+        if event.get("exclusive").and_then(Value::as_bool) == Some(true)
+            && let Some(other) = exclusive.insert(tick, id.clone())
+        {
+            return Err(StoreError::invalid_record(format!(
+                "exclusive events {other} and {id} overlap at tick {tick}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// SYS-07 — a minigame: rules, inputs, and a judge named as an
+/// artifact path plus SHA-256. Meister never runs the judge;
+/// the census verifies the reference. The path is relative and
+/// may not climb out of the project.
+fn validate_minigame_spec(spec: &Value) -> StoreResult<()> {
+    if spec.get("rules").is_none_or(Value::is_null) {
+        return Err(StoreError::invalid_record("a minigame names its rules"));
+    }
+    if let Some(inputs) = spec.get("inputs") {
+        let inputs = inputs
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("minigame inputs must be an array"))?;
+        if inputs.len() > MAX_MINIGAME_INPUTS {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!("minigame inputs exceed the bound of {MAX_MINIGAME_INPUTS}"),
+            ));
+        }
+    }
+    let judge = spec.get("judge").filter(|v| v.is_object()).ok_or_else(|| {
+        StoreError::invalid_record("a minigame names its judge as {path, sha256}")
+    })?;
+    let path = judge
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.chars().count() <= MAX_PATH_CHARS)
+        .ok_or_else(|| StoreError::invalid_record("judge path must be a non-empty string"))?;
+    let path_ref = Path::new(path);
+    if path_ref.is_absolute()
+        || path_ref
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(StoreError::invalid_record(format!(
+            "judge path {path} must be a relative path inside the project"
+        )));
+    }
+    let _sha = judge
+        .get("sha256")
+        .and_then(Value::as_str)
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| StoreError::invalid_record("judge sha256 must be 64 hex characters"))?;
+    Ok(())
+}
+
+/// SYS-07 — the census covers minigame judge references: the
+/// judge artifact must carry the hash the record declares.
+fn census_systems(b: &mut CensusBuilder, project_dir: &Path, systems: &[(String, Value)]) {
+    for (_, record) in systems {
+        if record["kind"].as_str() != Some("minigame") {
+            continue;
+        }
+        let system_id = record["system_id"].as_str().unwrap_or("?");
+        let judge = &record["spec"]["judge"];
+        let source = judge["path"].as_str().unwrap_or("");
+        let expected = judge["sha256"].as_str().unwrap_or("");
+        let (ok, detail) = verify_source(project_dir, source, expected);
+        b.check(Claim {
+            id: format!("system:{system_id}:judge"),
+            subject: system_id.to_string(),
+            claim: "minigame judge artifact carries its recorded hash".to_string(),
+            value: json!(expected),
+            source_artifact: source.to_string(),
+            source_sha256: Some(expected.to_string()),
+            verified: ok,
+            detail,
+        });
+    }
 }
 
 fn census_project(
@@ -2431,6 +3026,387 @@ mod tests {
         let body = err.census.expect("the census rides the refusal");
         assert_eq!(check_named(&body, "ref:project")["status"], "unverified");
         assert_eq!(body["counts"]["duplicate_record_ids"], 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- SYS-02..07: system_define per kind ----------
+
+    fn system_args(system_id: &str, kind: &str, spec: Value) -> Value {
+        let mut args = json!({"envelope": envelope(), "project_id": "first-light",
+               "system_id": system_id, "kind": kind, "spec": spec});
+        args["envelope"]["record_id"] = json!(format!("rec-{system_id}"));
+        args
+    }
+
+    fn flags_spec() -> Value {
+        json!({"flags": [
+            {"id": "met-warden", "type": "bool", "initial": false},
+            {"id": "depth", "type": "int", "initial": 1, "min": 0, "max": 12}
+        ]})
+    }
+
+    fn with_flags(name: &str) -> (Store, PathBuf, PathBuf) {
+        let (store, root, source) = scaffolded(name);
+        store
+            .define_system(&system_args("core-flags", "flags", flags_spec()))
+            .unwrap();
+        (store, root, source)
+    }
+
+    #[test]
+    fn flags_round_trip_and_redefine_conflicts() {
+        let (store, root, _source) = scaffolded("sys-flags");
+        let body = store
+            .define_system(&system_args("core-flags", "flags", flags_spec()))
+            .unwrap();
+        assert_eq!(body["status"], "candidate");
+        assert_eq!(body["kind"], "flags");
+        assert!(root.join("first-light/systems/core-flags.json").is_file());
+        let err = store
+            .define_system(&system_args("core-flags", "flags", flags_spec()))
+            .unwrap_err();
+        assert_eq!(err.code, "conflict");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_duplicate_flag_is_flag_duplicate() {
+        let (store, root, _source) = scaffolded("sys-flag-dupe");
+        let spec = json!({"flags": [
+            {"id": "met-warden", "type": "bool", "initial": false},
+            {"id": "met-warden", "type": "bool", "initial": true}
+        ]});
+        let err = store
+            .define_system(&system_args("f", "flags", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "flag_duplicate");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_an_int_flag_without_bounds_is_refused() {
+        let (store, root, _source) = scaffolded("sys-flag-nobounds");
+        let spec = json!({"flags": [
+            {"id": "depth", "type": "int", "initial": 1}
+        ]});
+        let err = store
+            .define_system(&system_args("f", "flags", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_an_int_initial_out_of_bounds_is_refused() {
+        let (store, root, _source) = scaffolded("sys-flag-oob");
+        let spec = json!({"flags": [
+            {"id": "depth", "type": "int", "initial": 99, "min": 0, "max": 12}
+        ]});
+        let err = store
+            .define_system(&system_args("f", "flags", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_float_flag_initial_is_refused() {
+        let (store, root, _source) = scaffolded("sys-flag-float");
+        let spec = json!({"flags": [
+            {"id": "depth", "type": "int", "initial": 1.5, "min": 0, "max": 12}
+        ]});
+        let err = store
+            .define_system(&system_args("f", "flags", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn machine_spec() -> Value {
+        json!({"states": ["sealed", "open", "cleared"],
+        "initial": "sealed", "terminal": ["cleared"],
+        "transitions": [
+            {"from": "sealed", "to": "open", "guard": "met-warden"},
+            {"from": "open", "to": "cleared"}
+        ]})
+    }
+
+    #[test]
+    fn a_state_machine_round_trips() {
+        let (store, root, _source) = with_flags("sys-machine");
+        let body = store
+            .define_system(&system_args("chamber", "state_machine", machine_spec()))
+            .unwrap();
+        assert_eq!(body["kind"], "state_machine");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_transition_to_an_undeclared_state_is_state_undeclared() {
+        let (store, root, _source) = with_flags("sys-machine-undeclared");
+        let mut spec = machine_spec();
+        spec["transitions"][1]["to"] = json!("gone");
+        let err = store
+            .define_system(&system_args("chamber", "state_machine", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "state_undeclared");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_guard_on_an_undeclared_flag_is_flag_undeclared() {
+        let (store, root, _source) = with_flags("sys-machine-guard");
+        let mut spec = machine_spec();
+        spec["transitions"][0]["guard"] = json!("never-declared");
+        let err = store
+            .define_system(&system_args("chamber", "state_machine", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "flag_undeclared");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_an_unreachable_non_terminal_state_is_graph_unreachable() {
+        let (store, root, _source) = with_flags("sys-machine-island");
+        let spec = json!({"states": ["sealed", "open", "side-room"],
+               "initial": "sealed", "terminal": [],
+               "transitions": [{"from": "sealed", "to": "open"}]});
+        let err = store
+            .define_system(&system_args("chamber", "state_machine", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "graph_unreachable");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreachable_terminal_state_is_tolerated() {
+        // The plan's contract: graph_unreachable names a
+        // NON-terminal unreachable state. A terminal state no
+        // path reaches is dead content, not a refusal.
+        let (store, root, _source) = with_flags("sys-machine-terminal");
+        let spec = json!({"states": ["sealed", "open", "cleared"],
+               "initial": "sealed", "terminal": ["cleared"],
+               "transitions": [{"from": "sealed", "to": "open"}]});
+        store
+            .define_system(&system_args("chamber", "state_machine", spec))
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_progression_dag_chains_and_branches() {
+        let (store, root, _source) = scaffolded("sys-dag");
+        let spec = json!({"nodes": [
+            {"id": "floor-1"},
+            {"id": "floor-2", "requires": ["floor-1"]},
+            {"id": "floor-3", "requires": ["floor-1"]},
+            {"id": "boss", "requires": ["floor-2", "floor-3"]}
+        ]});
+        store
+            .define_system(&system_args("descent", "progression_dag", spec))
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_dag_cycle_is_graph_cycle() {
+        let (store, root, _source) = scaffolded("sys-dag-cycle");
+        let spec = json!({"nodes": [
+            {"id": "a", "requires": ["b"]},
+            {"id": "b", "requires": ["a"]}
+        ]});
+        let err = store
+            .define_system(&system_args("descent", "progression_dag", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "graph_cycle");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_dag_prerequisite_on_an_undeclared_node_is_dangling() {
+        let (store, root, _source) = scaffolded("sys-dag-dangling");
+        let spec = json!({"nodes": [
+            {"id": "a", "requires": ["ghost"]}
+        ]});
+        let err = store
+            .define_system(&system_args("descent", "progression_dag", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "graph_dangling_ref");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn economy_spec() -> Value {
+        json!({"currencies": [{"id": "gold", "min": 0, "max": 9999}],
+               "sources": [{"currency": "gold", "amount": 50}],
+               "sinks": [{"currency": "gold", "amount": 20}]})
+    }
+
+    #[test]
+    fn an_economy_with_a_source_and_sink_round_trips() {
+        let (store, root, _source) = scaffolded("sys-economy");
+        store
+            .define_system(&system_args("market", "economy", economy_spec()))
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_float_economy_amount_is_economy_float() {
+        let (store, root, _source) = scaffolded("sys-economy-float");
+        let mut spec = economy_spec();
+        spec["sources"][0]["amount"] = json!(2.5);
+        let err = store
+            .define_system(&system_args("market", "economy", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "economy_float");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_an_economy_entry_without_a_bound_is_economy_unbounded() {
+        let (store, root, _source) = scaffolded("sys-economy-unbounded");
+        let mut spec = economy_spec();
+        spec["currencies"][0].as_object_mut().unwrap().remove("max");
+        let err = store
+            .define_system(&system_args("market", "economy", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "economy_unbounded");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_sink_on_an_undeclared_currency_is_refused() {
+        let (store, root, _source) = scaffolded("sys-economy-sink");
+        let mut spec = economy_spec();
+        spec["sinks"][0]["currency"] = json!("silver");
+        let err = store
+            .define_system(&system_args("market", "economy", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_daily_schedule_round_trips() {
+        let (store, root, _source) = with_flags("sys-schedule");
+        let spec = json!({"events": [
+            {"id": "dawn", "tick": 0, "flag": "met-warden", "effect": "bells"},
+            {"id": "dusk", "tick": 10, "flag": "met-warden", "effect": "lamps",
+             "exclusive": true}
+        ]});
+        store
+            .define_system(&system_args("day", "schedule", spec))
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_negative_tick_is_refused() {
+        let (store, root, _source) = with_flags("sys-schedule-negative");
+        let spec = json!({"events": [
+            {"id": "dawn", "tick": -1, "flag": "met-warden", "effect": "bells"}
+        ]});
+        let err = store
+            .define_system(&system_args("day", "schedule", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_schedule_effect_on_an_undeclared_flag_is_flag_undeclared() {
+        let (store, root, _source) = with_flags("sys-schedule-flag");
+        let spec = json!({"events": [
+            {"id": "dawn", "tick": 0, "flag": "never-declared", "effect": "bells"}
+        ]});
+        let err = store
+            .define_system(&system_args("day", "schedule", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "flag_undeclared");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_overlapping_exclusive_slots_are_refused() {
+        let (store, root, _source) = with_flags("sys-schedule-overlap");
+        let spec = json!({"events": [
+            {"id": "dawn", "tick": 5, "flag": "met-warden", "effect": "bells",
+             "exclusive": true},
+            {"id": "dawn-2", "tick": 5, "flag": "met-warden", "effect": "horns",
+             "exclusive": true}
+        ]});
+        let err = store
+            .define_system(&system_args("day", "schedule", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn minigame_args(root: &Path) -> (Value, PathBuf) {
+        let judge_dir = root.join("first-light/judges");
+        fs::create_dir_all(&judge_dir).unwrap();
+        let judge = judge_dir.join("coin.txt");
+        fs::write(&judge, b"abc").unwrap();
+        let spec = json!({"rules": "call the coin flip",
+               "inputs": ["call"],
+               "judge": {"path": "judges/coin.txt", "sha256": ABC_SHA}});
+        (system_args("coin-flip", "minigame", spec), judge)
+    }
+
+    #[test]
+    fn a_minigame_round_trips_and_the_census_verifies_its_judge() {
+        let (store, root, _source) = scaffolded("sys-minigame");
+        let (args, _judge) = minigame_args(&root);
+        store.define_system(&args).unwrap();
+        let census = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap();
+        assert_eq!(census["counts"]["system_records"], 1);
+        assert_eq!(
+            check_named(&census, "system:coin-flip:judge")["status"],
+            "verified"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_judge_without_a_hash_is_refused() {
+        let (store, root, _source) = scaffolded("sys-minigame-nohash");
+        let spec = json!({"rules": "call it",
+               "judge": {"path": "judges/coin.txt"}});
+        let err = store
+            .define_system(&system_args("coin-flip", "minigame", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_judge_path_with_traversal_is_refused() {
+        let (store, root, _source) = scaffolded("sys-minigame-traversal");
+        let spec = json!({"rules": "call it",
+               "judge": {"path": "../secret.txt", "sha256": ABC_SHA}});
+        let err = store
+            .define_system(&system_args("coin-flip", "minigame", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_record");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_the_census_names_a_judge_hash_mismatch() {
+        let (store, root, _source) = scaffolded("sys-minigame-mismatch");
+        let (args, judge) = minigame_args(&root);
+        store.define_system(&args).unwrap();
+        fs::write(&judge, b"tampered").unwrap();
+        let err = store
+            .canon_census(&json!({"project_id": "first-light"}))
+            .unwrap_err();
+        let body = err.census.expect("the census rides the refusal");
+        assert_eq!(
+            check_named(&body, "system:coin-flip:judge")["status"],
+            "unverified"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
