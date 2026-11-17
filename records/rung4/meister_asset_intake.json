@@ -1,0 +1,26 @@
+{
+    "asked": "Rung 4 promotion of the meister_asset_intake tool schema (AST-01): the input gains the optional chain (the keeper-chain session record) and drift (the drift measurement numbers) fields the handler reads.",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 4 \u2014 Asset routing and media); definitions measured from the built binary on the rung branch",
+    "origin_lane": "qompass",
+    "outcome_id": "rung4-meister_asset_intake",
+    "produced": [
+        {
+            "path": "tools/list#meister_asset_intake",
+            "sha256": "3b36669e67d15a0047705a0bec2a70ff3d481eceb248ae61a0f0111f4ea52514"
+        }
+    ],
+    "recorded_at_epoch": 1794907388,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-mcp",
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}

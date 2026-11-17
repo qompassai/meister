@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.0 — 2026-11-17
+
+- Rung 4 — asset routing and media (branch
+  `pax/rung4-assets-20261116`, stacked on the Rung 3
+  branch; unmerged and unpublished — the version names
+  the branch state GATE-4 verified).
+- Group 7 is real. `meister_asset_intake`: one media
+  artifact from the nine-kind media map, its declared
+  SHA-256 verified against the bytes when provenance
+  names a source path, art-tool provenance required, and
+  attribution recorded as verified or unverifiable —
+  marked, never repeated as fact. An asset of a locked
+  character records the standing lock hash.
+- `meister_asset_chain_get` judges keeper chains: a
+  missing chain is the typed state absent-unverified; an
+  incomplete chain is refused naming the first missing
+  field (`chain_incomplete` — the rung's published gate);
+  the chain's final hash must equal the asset's.
+  Admission is derived from the verdict chain (a chain
+  claiming admission without a standing adoption is
+  `canon_unadopted`; an admitted asset without a drift
+  measurement is `drift_unmeasured`); a stale character
+  lock is `lock_stale`; a human-touched finish node makes
+  the asset custody-frozen, and re-intake against it is
+  refused with the refusal recorded verbatim. No tool
+  declares a visual pass.
+- `meister_asset_route` records handoffs to lumen,
+  eigenstyle, bloch, and fathom (spec-only: a route
+  claiming the asset itself is `fathom_asset_refused`).
+  The conformance run routes every media-map format.
+- The genesis defaults ledger (AST-06): a project may be
+  born with the seven defaults under a block of kind born
+  or adopted, confirmed as a block through
+  `meister_verdict_record` and read back through
+  `meister_project_inspect`; emit refuses an unconfirmed
+  block (`defaults_unconfirmed`). The ledger is
+  append-only — it moves only through verdicts.
+- AST-07 (the lumen-lane graduation amendments) is not
+  Meister code and was not done in this lane; it is
+  recorded as outstanding in COMPLIANCE.md §10.
+- Twenty-one of 33 tools are live; twelve seams remain.
+
 ## 0.4.0 — 2026-11-17
 
 - Rung 3 — narrative authoring, freeze, and emit (branch

@@ -2374,19 +2374,18 @@ channel = \"nightly-2026-10-30\"
         let project_id = arg_id(args, "project_id")?;
         let asset_id = arg_id(args, "asset_id")?;
         let file = self.asset_file(&project_id, &asset_id);
-        if file.exists() {
-            if let Ok(existing) = self.read_asset(&project_id, &asset_id) {
-                if chain_has_custody_node(&existing["chain"]) {
-                    self.record_custody_refusal(&project_id, &asset_id, args)?;
-                    return Err(StoreError::new(
-                        "custody_frozen",
-                        format!(
-                            "asset {asset_id} carries a finish node a human has touched; \
-                             it is custody-frozen and this proposal is refused (the refusal is on record)"
-                        ),
-                    ));
-                }
-            }
+        if file.exists()
+            && let Ok(existing) = self.read_asset(&project_id, &asset_id)
+            && chain_has_custody_node(&existing["chain"])
+        {
+            self.record_custody_refusal(&project_id, &asset_id, args)?;
+            return Err(StoreError::new(
+                "custody_frozen",
+                format!(
+                    "asset {asset_id} carries a finish node a human has touched; \
+                     it is custody-frozen and this proposal is refused (the refusal is on record)"
+                ),
+            ));
         }
         self.mutate(|| self.plan_asset_intake(args))
     }

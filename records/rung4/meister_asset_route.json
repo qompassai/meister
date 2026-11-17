@@ -1,0 +1,26 @@
+{
+    "asked": "Rung 4 promotion of the meister_asset_route tool schema (AST-05): the input gains the optional mode field (spec or asset); fathom routes are spec-only and a route claiming the asset is fathom_asset_refused.",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 4 \u2014 Asset routing and media); definitions measured from the built binary on the rung branch",
+    "origin_lane": "qompass",
+    "outcome_id": "rung4-meister_asset_route",
+    "produced": [
+        {
+            "path": "tools/list#meister_asset_route",
+            "sha256": "4bced343221e6c5bec74406fb0b6810f6b9458db86bcdb0dec0ff5fdd478e394"
+        }
+    ],
+    "recorded_at_epoch": 1794907388,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-mcp",
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}
