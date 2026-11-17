@@ -2250,8 +2250,9 @@ fn census_narrative_checks(
         if !terms.is_empty() {
             for (rel, record) in store.read_family_records(project_id, "narrative")? {
                 let mut fields: Vec<(String, String)> = Vec::new();
-                if record.get("record_type").and_then(Value::as_str) == Some("meister_dialogue") {
-                    if let Some(lines) = record.get("lines").and_then(Value::as_array) {
+                if record.get("record_type").and_then(Value::as_str) == Some("meister_dialogue")
+                    && let Some(lines) = record.get("lines").and_then(Value::as_array)
+                {
                         for (i, line) in lines.iter().enumerate() {
                             if let Some(text) = line.get("text").and_then(Value::as_str) {
                                 fields.push((format!("lines[{i}].text"), text.to_string()));
@@ -2270,8 +2271,9 @@ fn census_narrative_checks(
                         }
                     }
                 }
-                if record.get("record_type").and_then(Value::as_str) == Some("meister_story_arc") {
-                    if let Some(beats) = record.get("beats").and_then(Value::as_array) {
+                if record.get("record_type").and_then(Value::as_str) == Some("meister_story_arc")
+                    && let Some(beats) = record.get("beats").and_then(Value::as_array)
+                {
                         for (i, beat) in beats.iter().enumerate() {
                             if let Some(title) = beat.get("title").and_then(Value::as_str) {
                                 fields.push((format!("beats[{i}].title"), title.to_string()));
@@ -3204,12 +3206,6 @@ fn descent_violation(message: String) -> StoreError {
 ///
 /// Bounds (floors ≤ 64, chambers ≤ 64 per floor, doors ≤ 128
 /// per floor) and the `descent_violation` code are the plan's
-/// SYS-09 contract. Progression gates must name declared
-/// progression_dag systems and minigame placements declared
-/// minigame systems (the plan's SYS-09 references).
-///
-/// Returns the floor count.
-
 /// NAR-04: the level's narrative half. Trigger `dialogue`
 /// fields name authored dialogues; `layout.narrative` composes
 /// chambers with scene and dialogue records; `layout.encounters`
@@ -3359,6 +3355,11 @@ fn validate_level_narrative(
     Ok(())
 }
 
+/// SYS-09 contract. Progression gates must name declared
+/// progression_dag systems and minigame placements declared
+/// minigame systems (the plan's SYS-09 references).
+///
+/// Returns the floor count.
 fn validate_descent_layout(
     layout: &Value,
     dag_ids: &BTreeSet<String>,
