@@ -1,0 +1,27 @@
+{
+  "id": "flags-06-unknown-type",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "a flag type the kind does not have",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-flags-06-unknown-type",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-flags-06-unknown-type",
+    "kind": "flags",
+    "spec": {
+      "flags": [
+        {
+          "id": "x",
+          "type": "string",
+          "initial": "hi"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "sch-05-float-tick",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "a float tick",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sch-05-float-tick",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sch-05-float-tick",
+    "kind": "schedule",
+    "spec": {
+      "events": [
+        {
+          "id": "dawn",
+          "tick": 0.5,
+          "flag": "met-warden",
+          "effect": "bells"
+        }
+      ]
+    }
+  }
+}

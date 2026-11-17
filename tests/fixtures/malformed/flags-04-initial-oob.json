@@ -1,0 +1,29 @@
+{
+  "id": "flags-04-initial-oob",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "an initial value outside its declared bounds",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-flags-04-initial-oob",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-flags-04-initial-oob",
+    "kind": "flags",
+    "spec": {
+      "flags": [
+        {
+          "id": "depth",
+          "type": "int",
+          "initial": 99,
+          "min": 0,
+          "max": 9
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "scene-01-duplicate-node",
+  "tool": "meister_scene_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "the same scene node twice",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-scene-01-duplicate-node",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "scene_id": "mal-scene-01-duplicate-node",
+    "graph": {
+      "nodes": [
+        {
+          "id": "a"
+        },
+        {
+          "id": "a"
+        }
+      ],
+      "edges": []
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "sch-02-undeclared-flag",
+  "tool": "meister_system_define",
+  "expected_code": "flag_undeclared",
+  "provenance": "observed-class: hallucinated cross-references in local-model output (night-queue units, 2026-11-16)",
+  "note": "an event conditioned on an undeclared flag",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sch-02-undeclared-flag",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sch-02-undeclared-flag",
+    "kind": "schedule",
+    "spec": {
+      "events": [
+        {
+          "id": "dawn",
+          "tick": 0,
+          "flag": "never-declared",
+          "effect": "bells"
+        }
+      ]
+    }
+  }
+}

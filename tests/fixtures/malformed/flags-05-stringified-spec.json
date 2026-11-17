@@ -1,0 +1,19 @@
+{
+  "id": "flags-05-stringified-spec",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: stringified JSON in local-model tool output (phlow lanes, estate record)",
+  "note": "the spec as a stringified JSON string instead of an object",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-flags-05-stringified-spec",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-flags-05-stringified-spec",
+    "kind": "flags",
+    "spec": "{\"flags\": [{\"id\": \"depth\", \"type\": \"int\"}]}"
+  }
+}

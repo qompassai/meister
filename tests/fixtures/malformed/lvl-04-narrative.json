@@ -1,0 +1,38 @@
+{
+  "id": "lvl-04-narrative",
+  "tool": "meister_level_compose",
+  "expected_code": "not_implemented_until_rung3",
+  "provenance": "synthetic-classic",
+  "note": "a narrative field: Rung 3 owns it, the refusal is typed",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-lvl-04-narrative",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "level_id": "mal-lvl-04-narrative",
+    "layout": {
+      "floors": [
+        {
+          "floor_id": "floor-1",
+          "chambers": [
+            {
+              "id": "cell"
+            }
+          ],
+          "entry_points": [
+            {
+              "id": "landing"
+            }
+          ],
+          "doors": []
+        }
+      ],
+      "narrative": {
+        "intro": "once"
+      }
+    }
+  }
+}

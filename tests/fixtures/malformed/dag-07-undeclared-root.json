@@ -1,0 +1,28 @@
+{
+  "id": "dag-07-undeclared-root",
+  "tool": "meister_system_define",
+  "expected_code": "graph_dangling_ref",
+  "provenance": "observed-class: hallucinated cross-references in local-model output (night-queue units, 2026-11-16)",
+  "note": "a declared root that is not a node",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-dag-07-undeclared-root",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-dag-07-undeclared-root",
+    "kind": "progression_dag",
+    "spec": {
+      "nodes": [
+        {
+          "id": "a"
+        }
+      ],
+      "roots": [
+        "nope"
+      ]
+    }
+  }
+}

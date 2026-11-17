@@ -1,0 +1,43 @@
+{
+  "id": "lvl-06-one-sided-door",
+  "tool": "meister_level_compose",
+  "expected_code": "descent_violation",
+  "provenance": "synthetic-classic",
+  "note": "a door joining a chamber that does not exist",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-lvl-06-one-sided-door",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "level_id": "mal-lvl-06-one-sided-door",
+    "layout": {
+      "floors": [
+        {
+          "floor_id": "floor-1",
+          "chambers": [
+            {
+              "id": "cell"
+            }
+          ],
+          "entry_points": [
+            {
+              "id": "landing"
+            }
+          ],
+          "doors": [
+            {
+              "id": "d1",
+              "between": [
+                "cell",
+                "nowhere"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

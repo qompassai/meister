@@ -1,0 +1,24 @@
+{
+  "id": "mini-01-judge-no-hash",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "a judge with a path but no hash",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-mini-01-judge-no-hash",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-mini-01-judge-no-hash",
+    "kind": "minigame",
+    "spec": {
+      "rules": "call it",
+      "judge": {
+        "path": "judges/coin.txt"
+      }
+    }
+  }
+}

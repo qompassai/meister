@@ -1,0 +1,27 @@
+{
+  "id": "sch-06-missing-effect",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_input",
+  "provenance": "synthetic-classic",
+  "note": "an event with no effect named",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sch-06-missing-effect",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sch-06-missing-effect",
+    "kind": "schedule",
+    "spec": {
+      "events": [
+        {
+          "id": "dawn",
+          "tick": 0,
+          "flag": "met-warden"
+        }
+      ]
+    }
+  }
+}

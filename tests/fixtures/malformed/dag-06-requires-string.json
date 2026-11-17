@@ -1,0 +1,26 @@
+{
+  "id": "dag-06-requires-string",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "requires as a string instead of an array",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-dag-06-requires-string",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-dag-06-requires-string",
+    "kind": "progression_dag",
+    "spec": {
+      "nodes": [
+        {
+          "id": "a",
+          "requires": "b"
+        }
+      ]
+    }
+  }
+}

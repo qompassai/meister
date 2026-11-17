@@ -1,0 +1,36 @@
+{
+  "id": "sch-03-exclusive-overlap",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "two exclusive events at the same tick",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sch-03-exclusive-overlap",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sch-03-exclusive-overlap",
+    "kind": "schedule",
+    "spec": {
+      "events": [
+        {
+          "id": "dawn",
+          "tick": 5,
+          "flag": "met-warden",
+          "effect": "bells",
+          "exclusive": true
+        },
+        {
+          "id": "dawn-2",
+          "tick": 5,
+          "flag": "met-warden",
+          "effect": "horns",
+          "exclusive": true
+        }
+      ]
+    }
+  }
+}

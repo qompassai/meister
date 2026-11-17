@@ -1,0 +1,31 @@
+{
+  "id": "lvl-01-no-entry",
+  "tool": "meister_level_compose",
+  "expected_code": "descent_violation",
+  "provenance": "synthetic-classic",
+  "note": "a floor with no entry point (D-1659: first-class architecture)",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-lvl-01-no-entry",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "level_id": "mal-lvl-01-no-entry",
+    "layout": {
+      "floors": [
+        {
+          "floor_id": "floor-1",
+          "chambers": [
+            {
+              "id": "cell"
+            }
+          ],
+          "entry_points": [],
+          "doors": []
+        }
+      ]
+    }
+  }
+}

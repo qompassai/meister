@@ -1,0 +1,27 @@
+{
+  "id": "x-01-nsfw-envelope",
+  "tool": "meister_system_define",
+  "expected_code": "lane_mismatch",
+  "provenance": "observed-class: lane discipline (bloch lane law fixtures)",
+  "note": "an NSFW-labelled envelope to an SFW tool: the lane gate refuses first",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-x-01",
+      "origin_lane": "ntranch",
+      "content_label": "nsfw",
+      "evidence": "SYS-10 corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-x-01-nsfw-envelope",
+    "kind": "flags",
+    "spec": {
+      "flags": [
+        {
+          "id": "a",
+          "type": "bool",
+          "initial": false
+        }
+      ]
+    }
+  }
+}

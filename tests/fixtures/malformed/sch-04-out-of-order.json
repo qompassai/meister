@@ -1,0 +1,34 @@
+{
+  "id": "sch-04-out-of-order",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "events out of time order",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-sch-04-out-of-order",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-sch-04-out-of-order",
+    "kind": "schedule",
+    "spec": {
+      "events": [
+        {
+          "id": "dusk",
+          "tick": 10,
+          "flag": "met-warden",
+          "effect": "lamps"
+        },
+        {
+          "id": "dawn",
+          "tick": 0,
+          "flag": "met-warden",
+          "effect": "bells"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "eco-05-amount-string",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "observed-class: type drift in local-model JSON (night-queue reviewer units, 2026-11-16)",
+  "note": "an amount as a string",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-eco-05-amount-string",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-eco-05-amount-string",
+    "kind": "economy",
+    "spec": {
+      "currencies": [
+        {
+          "id": "gold",
+          "min": 0,
+          "max": 99
+        }
+      ],
+      "sources": [
+        {
+          "currency": "gold",
+          "amount": "50"
+        }
+      ]
+    }
+  }
+}

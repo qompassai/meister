@@ -1,0 +1,24 @@
+{
+  "id": "mini-04-missing-rules",
+  "tool": "meister_system_define",
+  "expected_code": "invalid_record",
+  "provenance": "synthetic-classic",
+  "note": "a minigame with no rules",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-mini-04-missing-rules",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "system_id": "mal-mini-04-missing-rules",
+    "kind": "minigame",
+    "spec": {
+      "judge": {
+        "path": "judges/coin.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+}

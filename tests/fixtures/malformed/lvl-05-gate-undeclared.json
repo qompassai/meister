@@ -1,0 +1,41 @@
+{
+  "id": "lvl-05-gate-undeclared",
+  "tool": "meister_level_compose",
+  "expected_code": "graph_dangling_ref",
+  "provenance": "observed-class: hallucinated cross-references in local-model output (night-queue units, 2026-11-16)",
+  "note": "a progression gate naming a system that does not exist",
+  "arguments": {
+    "envelope": {
+      "record_id": "rec-mal-lvl-05-gate-undeclared",
+      "origin_lane": "qompass",
+      "content_label": "sfw",
+      "evidence": "SYS-10 malformed corpus"
+    },
+    "project_id": "wire-game",
+    "level_id": "mal-lvl-05-gate-undeclared",
+    "layout": {
+      "floors": [
+        {
+          "floor_id": "floor-1",
+          "chambers": [
+            {
+              "id": "cell"
+            }
+          ],
+          "entry_points": [
+            {
+              "id": "landing"
+            }
+          ],
+          "doors": []
+        }
+      ],
+      "gates": [
+        {
+          "id": "g1",
+          "system_id": "no-such-dag"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "scene-06-missing-envelope",
+  "tool": "meister_scene_define",
+  "expected_code": "lane_unclassified",
+  "provenance": "synthetic-classic",
+  "note": "no envelope at all: the lane gate refuses before the store",
+  "arguments": {
+    "project_id": "wire-game",
+    "scene_id": "mal-scene-06",
+    "graph": {
+      "nodes": [
+        {
+          "id": "a"
+        }
+      ],
+      "edges": []
+    }
+  }
+}
