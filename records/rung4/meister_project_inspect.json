@@ -1,0 +1,26 @@
+{
+    "asked": "Rung 4 promotion of the meister_project_inspect tool schema (AST-06): the output gains the genesis summary (record id, kind, derived confirmation, the seven defaults' values).",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 4 \u2014 Asset routing and media); definitions measured from the built binary on the rung branch",
+    "origin_lane": "qompass",
+    "outcome_id": "rung4-meister_project_inspect",
+    "produced": [
+        {
+            "path": "tools/list#meister_project_inspect",
+            "sha256": "ad77540ebe97cc18104618b64b6b4b557c868e4839a28ea4416b8f59b4871c45"
+        }
+    ],
+    "recorded_at_epoch": 1794907388,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-mcp",
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}

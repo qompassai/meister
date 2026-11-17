@@ -123,6 +123,16 @@ it, and no base profile is over. `full` measures 6,328
 (audit-only; the §3 waiver covers it). The count of tools
 is 33 since Rung 3 (31 at birth).
 
+Rung 4 status: Group 7 is real (asset intake with
+byte-verified provenance, keeper-chain judgment, and
+routing to the specialist servers), and the genesis
+defaults ledger (AST-06) rides the existing tools —
+authored through `meister_project_create`, confirmed
+through `meister_verdict_record`, read through
+`meister_project_inspect`, gating `meister_emit` — 21 of
+33 tools live; the remaining 12 are the typed seams of
+Groups 6 and 8–10.
+
 Rung 3 status: Groups 4–5 are real (dialogue, reactions,
 story arcs, level narrative composition, deterministic
 playtest), and the freeze/emit pair is real
@@ -290,6 +300,25 @@ successor evidence for the scene tools; the records law keys
 successors to definition changes, so none is owed — the
 disagreement is recorded here rather than resolved by
 inventing records the law does not call for.
+
+AST-01..06 add `asset_hash_mismatch` (a source path's
+bytes do not hash to the declared SHA-256),
+`character_unknown` (an asset claims a character the
+project does not have), `chain_incomplete` (a keeper
+chain is present but a required field is missing — the
+first is named; the rung's published gate),
+`chain_hash_mismatch` (the chain's final hash differs
+from the asset's), `canon_unadopted` (a chain claims
+admission no standing verdict grants),
+`drift_unmeasured` (an admitted asset carries no drift
+measurement), `lock_stale` (the character's identity
+lock changed since the asset recorded it),
+`custody_frozen` (re-intake against a human-touched
+chain; the refusal is recorded verbatim in the custody
+family first), `record_missing` (a route names an asset
+that does not exist), `fathom_asset_refused` (fathom is
+spec-only), and `defaults_unconfirmed` (emit against a
+project whose genesis block does not stand confirmed).
 
 NAR-01..03 add `speaker_unknown` (a dialogue line or
 reaction names no cast member), `identity_unlocked` (a
@@ -664,3 +693,55 @@ under the night authorization that built it.
   per-profile served sets). Inspector / rose / phlow: as
   recorded at GATE-2 (era gap / not run / not run) — not
   re-run at this gate.
+
+### GATE-4 evidence (Rung 4, 2026-11-17)
+
+Recorded on branch `pax/rung4-assets-20261116` at the
+GATE-4 commit; the branch is unmerged and unpublished
+under the night authorization that built it.
+
+- Standing gates on the final tree: full suite **213
+  passed, 0 failed** (170 unit + 24 conformance + 7
+  eflo_measure + 1 malformed + 7 manifest_agreement + 4
+  store_lock); clippy `--all-targets -D warnings` clean
+  (exit code verified); `cargo fmt --check` clean.
+- Theodolite (cured copy route; gate copy hash-verified
+  against the worktree): store.rs and catalog.rs at 0
+  severity-1 errors, planted control seen, witness
+  restored. Verdict: PASS. Record:
+  `theodolite-record-rung4.json` in the night gate
+  directory.
+- The rung's published gate (AST-02) is met by tests: a
+  missing chain reads as the typed state
+  absent-unverified; a present but incomplete chain is
+  refused `chain_incomplete` naming the first missing
+  field; admission is derived from the verdict chain, so
+  no asset stands as a keeper without a standing
+  adoption — and no tool declares a visual pass.
+- AST-05's Done is met over the wire: the conformance
+  run intakes and routes every media-map format (media
+  kinds to lumen, voice to eigenstyle).
+- EFLO re-measured on the final tree (EFLO.md): core
+  823, canon 1,650, systems 1,575, narrative 2,174,
+  assets 1,465, qa 1,850, release 1,768 — every base
+  profile within the 2,500 budget; niflheim-floor 2,926
+  (over by 426 — the §3 bundle waiver request covers
+  this growth; the decision stands with the Owner);
+  full 6,367 (audit-only).
+- Records: no tool was born at this rung; four served
+  definitions grew (asset intake's `chain`/`drift`,
+  asset route's `mode`, project create's `genesis`,
+  project inspect's `genesis`) and their successor
+  records are in `records/rung4/`; `records/README.md`
+  carries the rung4 note.
+- AST-07 — the graduation amendments in the lumen
+  repository (media-map metadata, the provenance
+  envelope, chain-field support) — is lumen-lane work,
+  not Meister code; it was not attempted in this lane
+  and stands outstanding for the lumen lane. AST-06's
+  adopted-kind genesis (Niflheim's block carrying its
+  ruling refs) is supported by the schema and awaits
+  the Niflheim lane recording it.
+- Client tolerance: as recorded at GATE-3 (Inspector era
+  gap / rose not run / phlow not run) — not re-run at
+  this gate.

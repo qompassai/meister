@@ -55,3 +55,14 @@ complete). The rung's two new tools were born at Rung 3 and
 their birth records live in `birth/` with the rest:
 `meister_verdict_record` (group 8) and `meister_emit`
 (group 5).
+
+## rung4/
+
+One promotion record per tool whose served definition
+changed at Rung 4, same envelope and convention:
+`meister_asset_intake` (optional `chain` and `drift`
+inputs), `meister_asset_route` (optional `mode` input),
+`meister_project_create` (optional `genesis` input), and
+`meister_project_inspect` (the `genesis` output). The
+asset handlers themselves landed at this rung against
+schemas born at Rung 0.
