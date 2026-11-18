@@ -1,0 +1,185 @@
+{
+  "schema": "meister-pack/1",
+  "slug": "role_playing",
+  "version": "1.0.0",
+  "kinds": [
+    {
+      "kind": "foe",
+      "fields": [
+        {"name": "display_name", "type": "string", "required": true},
+        {"name": "behaviour", "type": "string", "required": true, "ref": "state_machine"},
+        {"name": "tier", "type": "integer", "required": true},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "encounter",
+      "fields": [
+        {"name": "foes", "type": "array", "required": true, "ref": "foe"},
+        {"name": "weight", "type": "integer", "required": true},
+        {"name": "min_depth", "type": "integer", "required": false},
+        {"name": "max_depth", "type": "integer", "required": false},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "encounter_table",
+      "fields": [
+        {"name": "encounters", "type": "array", "required": true, "ref": "encounter"},
+        {"name": "steps_per_roll", "type": "integer", "required": true},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "enemy_genesis_hook",
+      "fields": [
+        {"name": "foe", "type": "string", "required": true, "ref": "foe"},
+        {"name": "variant_table", "type": "string", "required": true},
+        {"name": "variant_table_sha256", "type": "string", "required": false},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "portrait_set",
+      "fields": [
+        {"name": "character_id", "type": "string", "required": true},
+        {"name": "expressions", "type": "array", "required": true},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "combat_effect",
+      "fields": [
+        {"name": "trigger", "type": "string", "required": true},
+        {"name": "effect_asset_id", "type": "string", "required": false},
+        {"name": "hitstop_ms", "type": "integer", "required": false},
+        {"name": "screen_shake", "type": "integer", "required": false},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "music_cue",
+      "fields": [
+        {"name": "midi_asset_id", "type": "string", "required": true},
+        {"name": "streamed_fallback_asset_id", "type": "string", "required": false},
+        {"name": "loops", "type": "boolean", "required": false},
+        {"name": "schema_rev", "type": "integer", "required": true},
+        {"name": "migrated_from", "type": "object", "required": false}
+      ]
+    },
+    {
+      "kind": "data_migration",
+      "fields": [
+        {"name": "from_rev", "type": "integer", "required": true},
+        {"name": "to_rev", "type": "integer", "required": true},
+        {"name": "kinds", "type": "array", "required": true},
+        {"name": "steps", "type": "array", "required": true},
+        {"name": "reversible", "type": "boolean", "required": true}
+      ]
+    }
+  ],
+  "systems_templates": [
+    {
+      "template_id": "foe_behaviour",
+      "system_kind": "state_machine",
+      "spec": {
+        "states": ["idle", "patrol", "alert", "chase", "attack", "recover", "defeated"],
+        "initial": "idle",
+        "terminal": ["defeated"],
+        "transitions": [
+          {"from": "idle", "to": "patrol"},
+          {"from": "patrol", "to": "alert"},
+          {"from": "alert", "to": "patrol"},
+          {"from": "alert", "to": "chase"},
+          {"from": "chase", "to": "patrol"},
+          {"from": "chase", "to": "attack"},
+          {"from": "attack", "to": "recover"},
+          {"from": "recover", "to": "chase"},
+          {"from": "attack", "to": "defeated"},
+          {"from": "recover", "to": "defeated"}
+        ]
+      }
+    },
+    {
+      "template_id": "region_unlock",
+      "system_kind": "progression_dag",
+      "spec": {
+        "nodes": [
+          {"id": "region-1"},
+          {"id": "region-2", "requires": ["region-1"]},
+          {"id": "region-3", "requires": ["region-2"]}
+        ]
+      }
+    },
+    {
+      "template_id": "party_purse",
+      "system_kind": "economy",
+      "spec": {
+        "currencies": [{"id": "gold", "min": 0, "max": 999999}],
+        "resources": [{"id": "experience", "min": 0, "max": 9999999}],
+        "sources": [{"currency": "gold", "amount": 10}],
+        "sinks": [{"currency": "gold", "amount": 50}]
+      }
+    },
+    {
+      "template_id": "floor_cave",
+      "system_kind": "level",
+      "spec": {
+        "floors": [
+          {"floor_id": "floor-1",
+           "chambers": [{"id": "entry-hall"}, {"id": "vault"}],
+           "entry_points": [{"id": "landing"}],
+           "doors": [{"id": "d1", "between": ["entry-hall", "vault"]}]}
+        ]
+      }
+    },
+    {
+      "template_id": "region_descent",
+      "system_kind": "level",
+      "spec": {
+        "floors": [
+          {"floor_id": "floor-1",
+           "chambers": [{"id": "entry-hall"}, {"id": "vault"}],
+           "entry_points": [{"id": "landing"}],
+           "doors": [{"id": "d1", "between": ["entry-hall", "vault"]}]},
+          {"floor_id": "floor-2",
+           "chambers": [{"id": "crypt"}],
+           "entry_points": [{"id": "landing"}],
+           "doors": []},
+          {"floor_id": "floor-3",
+           "chambers": [{"id": "deep-vault"}],
+           "entry_points": [{"id": "landing"}],
+           "doors": []}
+        ],
+        "stairs": [
+          {"id": "s1", "from_floor": "floor-1", "to_floor": "floor-2", "direction": "both"},
+          {"id": "s2", "from_floor": "floor-2", "to_floor": "floor-3", "direction": "both"}
+        ]
+      }
+    }
+  ],
+  "media_profile": [
+    {"format": "pixel", "budget": {"max_assets": 2048, "max_frame_px": 256}},
+    {"format": "model_3d", "budget": {"max_assets": 256, "max_triangles": 60000}},
+    {"format": "still_2d", "budget": {"max_portrait_sets": 128, "max_expressions_per_set": 24}},
+    {"format": "audio", "budget": {"max_midi_tracks": 128, "max_streamed_tracks": 16}},
+    {"format": "effect", "budget": {"max_effect_records": 512}}
+  ],
+  "playtest_generators": [
+    {"generator_id": "floor_traversal", "description": "Walks every floor from an entry point through doors and two-way stairs as a player would, never teleporting (built by RPG-02 on NAR-06)."},
+    {"generator_id": "encounter_rolls", "description": "Rolls every encounter table at every depth band it covers and reports each FOE it can field."}
+  ],
+  "gates": [
+    {"gate_id": "foe_tables_closed", "description": "Every FOE names a declared state_machine behaviour table whose states are all declared."},
+    {"gate_id": "encounters_resolve", "description": "Every encounter names declared FOEs and every encounter table names declared encounters."},
+    {"gate_id": "midi_first", "description": "Every music cue carries a MIDI asset; a streamed track is only ever a fallback."},
+    {"gate_id": "migration_chain_unbroken", "description": "Every record's schema_rev is reachable from rev 1 through recorded data_migration steps."}
+  ],
+  "emitters": ["bevy-rust-content/1"]
+}

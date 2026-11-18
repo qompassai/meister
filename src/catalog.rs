@@ -711,7 +711,7 @@ pub fn specs() -> Vec<ToolSpec> {
             rung: 2,
             record_carrying: true,
             profiles: &[PROFILE_SYSTEMS],
-            description: "Define a game-systems record: schedule, flags, progression DAG, economy, state machine, or minigame, as a validated bounded record.",
+            description: "Define a game-systems record: schedule, flags, progression DAG, economy, state machine, or minigame, as a validated bounded record. Kind pack carries a record of pack_kind, a kind the project's selected genre packs declare.",
             input: record_input(
                 &[
                     ("project_id", s()),
@@ -725,8 +725,10 @@ pub fn specs() -> Vec<ToolSpec> {
                             "economy",
                             "state_machine",
                             "minigame",
+                            "pack",
                         ]),
                     ),
+                    ("pack_kind", s()),
                     ("spec", free_obj()),
                 ],
                 &["project_id", "system_id", "kind", "spec"],

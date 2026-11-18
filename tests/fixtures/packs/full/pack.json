@@ -1,0 +1,35 @@
+{
+  "schema": "meister-pack/1",
+  "slug": "rhythm",
+  "version": "0.1.0",
+  "kinds": [
+    {
+      "kind": "beat_chart",
+      "fields": [
+        {"name": "chart_id", "type": "string", "required": true},
+        {"name": "bpm", "type": "integer", "required": true},
+        {"name": "notes", "type": "array", "required": true},
+        {"name": "practice_only", "type": "boolean", "required": false},
+        {"name": "timing_window", "type": "object", "required": false}
+      ]
+    }
+  ],
+  "systems_templates": [
+    {
+      "template_id": "combo_meter",
+      "system_kind": "economy",
+      "spec": {"currencies": [{"id": "combo"}]}
+    }
+  ],
+  "media_profile": [
+    {"format": "audio", "budget": {"max_assets": 64, "max_bytes": 67108864}},
+    {"format": "pixel", "budget": {"max_assets": 256}}
+  ],
+  "playtest_generators": [
+    {"generator_id": "full_chart_pass", "description": "Plays every chart end to end at the authored timing."}
+  ],
+  "gates": [
+    {"gate_id": "chart_sync", "description": "Every chart's notes fall inside its timing window."}
+  ],
+  "emitters": ["bevy-rust-content/1"]
+}

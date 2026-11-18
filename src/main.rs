@@ -27,6 +27,7 @@ mod graph;
 mod guard;
 mod hash;
 mod lane;
+mod pack;
 mod server;
 mod store;
 
@@ -108,6 +109,13 @@ fn main() -> ExitCode {
     // served: an inconsistent catalog refuses to start.
     if let Err(e) = catalog::check_declared_profiles() {
         eprintln!("meister: refusing to start: profile_catalog_invalid: {e}");
+        return ExitCode::FAILURE;
+    }
+    // The compiled-in packs are validated before anything is
+    // served (PK-01): a build carrying an invalid pack refuses to
+    // start.
+    if let Err(e) = pack::check_compiled() {
+        eprintln!("meister: refusing to start: pack_catalog_invalid: {e}");
         return ExitCode::FAILURE;
     }
     // One profile per launch, fixed before anything is served. An

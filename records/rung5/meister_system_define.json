@@ -1,0 +1,25 @@
+{
+    "asked": "Rung 5 RPG-01 promotion of the meister_system_define tool schema: the kind enum gains the fixed value pack and the input the optional pack_kind, the live call path of PK-01 pack selection (the project's genre_pack and secondary_genre_packs select which pack kinds' validators run). One fixed value whatever packs are compiled in: the catalog invariant holds.",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 5, RPG-01; PK-01 carrier decision); definition measured from the built binary on the rung branch; the same method reproduces the birth record's hash from a pre-RPG-01 binary",
+    "origin_lane": "qompass",
+    "outcome_id": "rung5-meister_system_define",
+    "produced": [
+        {
+            "path": "tools/list#meister_system_define",
+            "sha256": "74213a2422c77a8a86023f02282300731ee6c178d8e604d0bea14427732a7921"
+        }
+    ],
+    "recorded_at_epoch": 1795003495,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}
