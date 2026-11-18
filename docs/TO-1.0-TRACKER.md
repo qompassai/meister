@@ -43,7 +43,7 @@ its rows as work moves.
 | RPG-01 | Role Playing pack v1 data | CLAUDE | TODO | Depends on PK-01. |
 | RPG-02 | RPG playtest generators (traverse floors as a player would) | CLAUDE + LOCAL | TODO | LOCAL runs traversal batches; results are evidence, not verdicts. |
 | TEACH-01 | Teaching layer v1 | CLAUDE | TODO | Both kinds land in the Educational secondary pack. |
-| SYS-11a | progression_dag recommended-prerequisite edges | CLAUDE | CLAIMED (CLAUDE lane sys11-teach, 2026-11-17) | From P0-4 amendment. Branch `pax/rung5-sys11-teach-20261117`. |
+| SYS-11a | progression_dag recommended-prerequisite edges | CLAUDE | IN-PROGRESS (CLAUDE lane sys11-teach, 2026-11-17) | From P0-4 amendment. Branch `pax/rung5-sys11-teach-20261117`. |
 | SYS-11b | chamber->scene record references checked at compose | CLAUDE | TODO | From P0-4 amendment. |
 | PK-02 | Second-pack smoke: data-only Puzzle pack skeleton against PK-01 schema | ASTRA | TODO | Depends on PK-01. No code changes to the mechanism. |
 | STAGE-01 | STAGE scene record (ruled scene idiom as data) | - | BLOCKED | Owner's R3-S5 verdict outstanding. The rung ships without it if the verdict has not landed. |
