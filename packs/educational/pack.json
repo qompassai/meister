@@ -1,0 +1,61 @@
+{
+  "schema": "meister-pack/1",
+  "slug": "educational",
+  "version": "0.1.0",
+  "kinds": [
+    {
+      "kind": "curriculum",
+      "fields": [
+        {"name": "curriculum_id", "type": "string", "required": true},
+        {"name": "domain", "type": "string", "required": true},
+        {"name": "codex_principle", "type": "string", "required": true},
+        {"name": "failure_class", "type": "string", "required": true}
+      ]
+    },
+    {
+      "kind": "assessment_encounter",
+      "fields": [
+        {"name": "encounter_id", "type": "string", "required": true},
+        {"name": "curriculum_id", "type": "string", "required": true},
+        {"name": "embedding_pattern", "type": "string", "required": true},
+        {"name": "gate_suite", "type": "object", "required": true},
+        {"name": "quiz", "type": "array", "required": false}
+      ]
+    }
+  ],
+  "systems_templates": [
+    {
+      "template_id": "learner_progress",
+      "system_kind": "state_machine",
+      "spec": {
+        "states": ["unseen", "introduced", "practiced", "assessed", "mastered"],
+        "initial": "unseen",
+        "terminal": ["mastered"],
+        "transitions": [
+          {"from": "unseen", "to": "introduced"},
+          {"from": "introduced", "to": "practiced"},
+          {"from": "practiced", "to": "assessed"},
+          {"from": "assessed", "to": "mastered"},
+          {"from": "assessed", "to": "practiced"}
+        ]
+      }
+    }
+  ],
+  "media_profile": [],
+  "playtest_generators": [],
+  "gates": [
+    {
+      "gate_id": "assessment_split_balanced",
+      "description": "Every assessment_encounter's gate suite records equal validation and adversarial counts (split_unbalanced otherwise)."
+    },
+    {
+      "gate_id": "assessment_suite_pinned",
+      "description": "Every assessment_encounter names its gate suite by path plus SHA-256; Meister never runs player code, the game does (suite_unhashed otherwise)."
+    },
+    {
+      "gate_id": "embedding_pattern_honest",
+      "description": "An encounter's embedding pattern matches its form: a quiz frame is narrative_quiz_frame and nothing else (embedding_mismatch otherwise)."
+    }
+  ],
+  "emitters": ["bevy-rust-content/1"]
+}

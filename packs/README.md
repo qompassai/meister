@@ -94,3 +94,32 @@ kind may not take the name).
 | Slug | Version | Contents |
 |---|---|---|
 | `role_playing` | 1.0.0 (RPG-01) | Kinds `foe` (behaviour refs a `state_machine` FOE behaviour table), `encounter` (refs `foe`), `encounter_table` (refs `encounter`), `enemy_genesis_hook` (a canonical variant-table reference only; genesis proper is Roguelike's), `portrait_set`, `combat_effect`, `music_cue` (MIDI required, streamed only as fallback), `data_migration`. Every kind but `data_migration` carries `schema_rev` (required) and `migrated_from` (optional) for version migration. Templates: `foe_behaviour` (state machine), `region_unlock` (progression DAG), `party_purse` (economy), `floor_cave` and `region_descent` (SYS-09 level layouts). Media: pixel, model_3d, still_2d portraits, MIDI-first audio, effect records; budgets are proposed design values. Emitter `bevy-rust-content/1`. |
+| `educational` | 0.1.0 (TEACH-01) | Kinds `curriculum` (canon: `domain`, `codex_principle`, `failure_class`, every field non-empty text) and `assessment_encounter` (gate suite pinned by path plus SHA-256 with an equal recorded validation/adversarial split; the embedding pattern must match its form — a quiz frame is `narrative_quiz_frame` and nothing else). The teaching law beyond the field tables lives in `src/teach.rs`, run by `Selection::validate` after the field table passes: typed refusals `split_unbalanced`, `suite_unhashed`, `embedding_mismatch`. Template: `learner_progress` (state machine). Selected as a secondary pack. Emitter `bevy-rust-content/1`. |
+
+### `educational` (TEACH-01, teaching layer v1)
+
+The Educational pack, selected as a secondary pack (e.g. primary
+`role_playing`, secondary `educational`). Its two kinds carry the
+teaching law in `src/teach.rs`, run by `Selection::validate` after
+the field table passes:
+
+| Kind | Fields | Law |
+|---|---|---|
+| `curriculum` (canon) | `curriculum_id`, `domain`, `codex_principle`, `failure_class` | Every field is non-empty text. |
+| `assessment_encounter` | `encounter_id`, `curriculum_id`, `embedding_pattern`, `gate_suite`, optional `quiz` | `embedding_pattern` is one of `lesson_as_mechanic`, `lesson_as_gate`, `assessment_as_encounter`, `narrative_quiz_frame`. `gate_suite` is closed: `path`, `sha256`, `validation_count`, `adversarial_count`. Meister never runs player code; the game does. |
+
+Typed refusals beyond the mechanism's: `split_unbalanced` (the
+recorded validation and adversarial counts differ), `suite_unhashed`
+(no SHA-256 on the suite), `embedding_mismatch` (an encounter
+carrying a `quiz` claims anything but `narrative_quiz_frame`, or
+`narrative_quiz_frame` without a quiz). Anything else malformed is
+`record_invalid`.
+
+The progress-state spec a teacher or learner inspects is the
+`learner_progress` systems template, a core `state_machine`:
+`unseen -> introduced -> practiced -> assessed -> mastered`, with
+`assessed -> practiced` for a failed assessment.
+
+Not yet checked (needs a carrier tool, an RPG-01 decision):
+that an encounter's `curriculum_id` names a curriculum record of
+the same project, and canon governance over curriculum records.

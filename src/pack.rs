@@ -51,11 +51,18 @@ pub const PACK_SCHEMA: &str = "meister-pack/1";
 /// A pack lands by adding its file under `packs/<slug>/` and one
 /// line here, e.g.
 /// `("role_playing", include_str!("../packs/role_playing/pack.json"))`.
-/// PK-01 landed the mechanism; RPG-01 lands the first pack.
-const COMPILED: &[(&str, &str)] = &[(
-    "role_playing",
-    include_str!("../packs/role_playing/pack.json"),
-)];
+/// PK-01 landed the mechanism; RPG-01 lands the first pack and
+/// TEACH-01 the second.
+const COMPILED: &[(&str, &str)] = &[
+    (
+        "role_playing",
+        include_str!("../packs/role_playing/pack.json"),
+    ),
+    (
+        "educational",
+        include_str!("../packs/educational/pack.json"),
+    ),
+];
 
 /// The `meister_system_define` kind that carries a pack record. A
 /// pack kind may never take this name.
@@ -354,11 +361,11 @@ impl Selection<'_> {
         record: &Value,
         resolves: &dyn Fn(&str, &str) -> bool,
     ) -> PackResult<()> {
-        let Some(def) = self
+        let Some((slug, def)) = self
             .packs
             .iter()
-            .flat_map(|p| p.kinds.iter())
-            .find(|d| d.kind == kind)
+            .flat_map(|p| p.kinds.iter().map(move |d| (p.slug.as_str(), d)))
+            .find(|(_, d)| d.kind == kind)
         else {
             return Err(PackError::new(
                 "pack_kind_not_selected",
@@ -399,6 +406,11 @@ impl Selection<'_> {
                 continue;
             };
             check_refs(kind, &field.name, target, value, resolves)?;
+        }
+        // The Educational pack's kinds carry the teaching law
+        // beyond their field tables (TEACH-01).
+        if slug == "educational" {
+            crate::teach::validate(kind, record)?;
         }
         Ok(())
     }
