@@ -1,0 +1,29 @@
+{
+    "asked": "Rung 5 PK-01 birth of the pack format schema meister-pack/1: packs as data plus emitters, never tools (closed format; typed refusals pack_declares_tool, pack_kind_collision, pack_format_not_lumen; project pack selection of kind validators; catalog invariant: tool count independent of pack count).",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 5, PK-01); the schema is defined by src/pack.rs and documented in packs/README.md; synthetic fixtures only",
+    "origin_lane": "qompass",
+    "outcome_id": "rung5-meister-pack-1",
+    "produced": [
+        {
+            "path": "packs/README.md",
+            "sha256": "2036dacc6a00f6a82cf375920ea2394568cf402b060ac0d17fcca5a6ff9f2a07"
+        },
+        {
+            "path": "src/pack.rs",
+            "sha256": "82688214ea5bd66764613bf82d969e7089e428764623081eb726add80b17c7d7"
+        }
+    ],
+    "recorded_at_epoch": 1794935501,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}

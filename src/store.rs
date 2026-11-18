@@ -519,7 +519,7 @@ fn record_hash(record: &Value) -> String {
 }
 
 /// The emitters this build carries (EMT-01..03).
-const EMITTERS: [&str; 2] = ["bevy-rust-content/1", "bevy-shell/1"];
+pub(crate) const EMITTERS: [&str; 2] = ["bevy-rust-content/1", "bevy-shell/1"];
 
 /// Escape a string into a Rust string literal body.
 fn escape_rust_str(text: &str) -> String {
@@ -598,7 +598,7 @@ pub const {const_name}: &str = \"{}\";
 }
 
 /// The media-map kinds an asset may be (AST-01).
-const ASSET_KINDS: [&str; 9] = [
+pub(crate) const ASSET_KINDS: [&str; 9] = [
     "still_2d",
     "pixel",
     "animation",
@@ -2932,7 +2932,7 @@ channel = \"nightly-2026-10-30\"
 const ENGINES: &[&str] = &["bevy", "godot", "renpy", "unity", "unreal"];
 
 /// The thirteen genre category slugs (README §"Genre categories").
-const GENRE_PACKS: &[&str] = &[
+pub(crate) const GENRE_PACKS: &[&str] = &[
     "action",
     "adventure",
     "educational",
@@ -4112,7 +4112,7 @@ fn census_references(
 
 /// The six system kinds (SYS-02..07), matching the catalog's
 /// `meister_system_define` kind enum.
-const SYSTEM_KINDS: &[&str] = &[
+pub(crate) const SYSTEM_KINDS: &[&str] = &[
     "schedule",
     "flags",
     "progression_dag",
