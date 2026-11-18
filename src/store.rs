@@ -1375,6 +1375,7 @@ impl Store {
         }
         let floor_count = validate_descent_layout(layout, &dag_ids, &minigame_ids)?;
         validate_level_narrative(self, &project_id, layout, &triggers)?;
+        validate_chamber_scenes(self, &project_id, &level_id, layout)?;
         let file = self.level_file(&project_id, &level_id);
         self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
@@ -4964,6 +4965,61 @@ fn validate_level_narrative(
     Ok(())
 }
 
+/// SYS-11b: a chamber may name the scene record that carries
+/// its content (`scene_id`). Every such reference resolves to a
+/// scene record of this project at compose, or the compose is
+/// refused with the referencing chamber and the missing scene
+/// both named. Chambers without a `scene_id` compose as before.
+fn validate_chamber_scenes(
+    store: &Store,
+    project_id: &str,
+    level_id: &str,
+    layout: &Value,
+) -> StoreResult<()> {
+    let Some(floors) = layout.get("floors").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let mut scene_ids: Option<BTreeSet<String>> = None;
+    for floor in floors {
+        let floor_id = floor["floor_id"].as_str().unwrap_or_default();
+        let Some(chambers) = floor["chambers"].as_array() else {
+            continue;
+        };
+        for chamber in chambers {
+            let Some(scene) = chamber.get("scene_id") else {
+                continue;
+            };
+            let chamber_id = chamber["id"].as_str().unwrap_or_default();
+            let scene = scene.as_str().ok_or_else(|| {
+                StoreError::invalid_record(format!(
+                    "chamber {chamber_id} scene_id must be a scene id string"
+                ))
+            })?;
+            // Read the scene family once, and only when a
+            // chamber references it.
+            if scene_ids.is_none() {
+                scene_ids = Some(
+                    store
+                        .read_family_records(project_id, "scenes")?
+                        .into_iter()
+                        .filter_map(|(_, r)| r["scene_id"].as_str().map(str::to_string))
+                        .collect(),
+                );
+            }
+            if !scene_ids.as_ref().is_some_and(|ids| ids.contains(scene)) {
+                return Err(StoreError::new(
+                    "graph_dangling_ref",
+                    format!(
+                        "level {level_id} floor {floor_id} chamber {chamber_id} references scene \
+                         {scene}, which is not a scene record of project {project_id}"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// SYS-09 contract. Progression gates must name declared
 /// progression_dag systems and minigame placements declared
 /// minigame systems (the plan's SYS-09 references).
@@ -6470,6 +6526,167 @@ mod tests {
                "level_id": "the-descent", "layout": layout});
         args["envelope"]["record_id"] = json!("rec-level-descent");
         args
+    }
+
+    // ---- SYS-11b: chamber -> scene references at compose ----
+
+    const FLOOR12_CHAMBERS: [&str; 5] = [
+        "core-alone",
+        "panic-handlers-and-entry",
+        "volatile-and-memory-mapped-doors",
+        "interrupts-and-critical-sections",
+        "driver-shape",
+    ];
+
+    /// The SYS-11 Floor 12 record set (meister-rung2-gate-20261116
+    /// evidence): the prerequisite DAG, the five chamber scenes,
+    /// and the level layout exactly as composed then.
+    fn floor12_store(tag: &str) -> (Store, PathBuf) {
+        let (store, root, _source) = scaffolded(tag);
+        store
+            .define_system(&system_args(
+                "floor-12-prereqs",
+                "progression_dag",
+                json!({"nodes": [{"id": "floor-5"}, {"id": "floor-9"},
+                                 {"id": "floor-12", "requires": ["floor-5"]}]}),
+            ))
+            .unwrap();
+        for scene in FLOOR12_CHAMBERS {
+            store
+                .define_scene(&scene_args(
+                    scene,
+                    json!({"acyclic": true,
+                           "nodes": [{"id": "enter"}, {"id": "encounter"}, {"id": "proof"}],
+                           "edges": [{"from": "enter", "to": "encounter"},
+                                     {"from": "encounter", "to": "proof"}]}),
+                ))
+                .unwrap();
+        }
+        (store, root)
+    }
+
+    fn floor12_layout() -> Value {
+        let chambers: Vec<Value> = FLOOR12_CHAMBERS.iter().map(|c| json!({"id": c})).collect();
+        let doors: Vec<Value> = (0..4)
+            .map(|i| {
+                json!({"id": format!("door-{i}"),
+                       "between": [FLOOR12_CHAMBERS[i], FLOOR12_CHAMBERS[i + 1]]})
+            })
+            .collect();
+        json!({"floors": [{"floor_id": "floor-12", "chambers": chambers, "doors": doors,
+                           "entry_points": [{"id": "stairs-from-floor-11"},
+                                            {"id": "stairs-to-floor-13"}]}],
+               "gates": [{"id": "gate-prereqs", "system_id": "floor-12-prereqs"}]})
+    }
+
+    fn floor12_level_args(layout: Value) -> Value {
+        let mut args = json!({"envelope": envelope(), "project_id": "first-light",
+               "level_id": "floor-12", "layout": layout, "triggers": []});
+        args["envelope"]["record_id"] = json!("sys11-level");
+        args
+    }
+
+    #[test]
+    fn sys11b_the_floor12_record_set_composes_unchanged() {
+        let (store, root) = floor12_store("s11b-v1");
+        let layout = floor12_layout();
+        let body = store
+            .compose_level(&floor12_level_args(layout.clone()))
+            .unwrap();
+        assert_eq!(body["floor_count"], 1);
+        let record = store
+            .find_record_by_id("first-light", "sys11-level")
+            .unwrap();
+        assert_eq!(record["layout"], layout, "the layout is stored as given");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sys11b_chambers_referencing_their_scenes_compose() {
+        let (store, root) = floor12_store("s11b-v2");
+        let mut layout = floor12_layout();
+        for (i, scene) in FLOOR12_CHAMBERS.iter().enumerate() {
+            layout["floors"][0]["chambers"][i]["scene_id"] = json!(scene);
+        }
+        store
+            .compose_level(&floor12_level_args(layout.clone()))
+            .unwrap();
+        let record = store
+            .find_record_by_id("first-light", "sys11-level")
+            .unwrap();
+        assert_eq!(
+            record["layout"]["floors"][0]["chambers"][4]["scene_id"],
+            "driver-shape"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sys11b_a_reference_resolves_by_scene_id_not_chamber_id() {
+        // Chamber ids and scene ids are separate namespaces: a
+        // chamber may carry any declared scene.
+        let (store, root) = floor12_store("s11b-v3");
+        let mut layout = floor12_layout();
+        layout["floors"][0]["chambers"][0]["scene_id"] = json!("driver-shape");
+        store.compose_level(&floor12_level_args(layout)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Compose must be refused and the store left byte-identical.
+    fn sys11b_refused(store: &Store, root: &Path, layout: Value) -> StoreError {
+        let before = tree(root);
+        let err = store
+            .compose_level(&floor12_level_args(layout))
+            .unwrap_err();
+        assert_eq!(tree(root), before, "a refused compose writes nothing");
+        err
+    }
+
+    #[test]
+    fn adv_sys11b_a_dangling_scene_reference_is_refused_naming_both() {
+        let (store, root) = floor12_store("s11b-a1");
+        let mut layout = floor12_layout();
+        layout["floors"][0]["chambers"][2]["scene_id"] = json!("ghost-scene");
+        let err = sys11b_refused(&store, &root, layout);
+        assert_eq!(err.code, "graph_dangling_ref");
+        for named in [
+            "level floor-12",
+            "chamber volatile-and-memory-mapped-doors",
+            "scene ghost-scene",
+        ] {
+            assert!(err.message.contains(named), "{named}: {}", err.message);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_sys11b_a_scene_of_another_project_does_not_resolve() {
+        let (store, root) = floor12_store("s11b-a2");
+        let mut other = create_args();
+        other["name"] = json!("Other Place");
+        let other_id = store.create_project(&other).unwrap()["project_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(other_id, "first-light");
+        let mut foreign = scene_args("foreign-scene", three_node_graph());
+        foreign["project_id"] = json!(other_id);
+        store.define_scene(&foreign).unwrap();
+        let mut layout = floor12_layout();
+        layout["floors"][0]["chambers"][0]["scene_id"] = json!("foreign-scene");
+        let err = sys11b_refused(&store, &root, layout);
+        assert_eq!(err.code, "graph_dangling_ref", "{}", err.message);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_sys11b_a_non_string_scene_reference_is_invalid() {
+        let (store, root) = floor12_store("s11b-a3");
+        let mut layout = floor12_layout();
+        layout["floors"][0]["chambers"][1]["scene_id"] = json!({"id": "core-alone"});
+        let err = sys11b_refused(&store, &root, layout);
+        assert_eq!(err.code, "invalid_record", "{}", err.message);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
