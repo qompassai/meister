@@ -1,0 +1,11 @@
+{
+  "schema": "meister-pack/1",
+  "slug": "strategy",
+  "version": "0.0.1",
+  "kinds": [],
+  "systems_templates": [],
+  "media_profile": [],
+  "playtest_generators": [],
+  "gates": [],
+  "emitters": []
+}
