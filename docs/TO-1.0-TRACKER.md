@@ -40,7 +40,7 @@ its rows as work moves.
 | ID | Task | Lane | Status | Notes |
 |---|---|---|---|---|
 | PK-01 | Pack mechanism: packs as data plus emitters, never tools; invariant test | CLAUDE | DONE 2026-11-17 | Pax gate PASS: branch `pax/rung5-pack-mechanism-20261117` @ `df6c108`, tests 231/0 (18 new: 9 validation + 9 adversarial), clippy/fmt rc=0, theodolite copy-route PASS. Selection not yet on a live call path — carrier tool is an RPG-01 decision; the dead-code debt is `expect`-guarded so it cannot rot silently. Branch push awaits Owner word. |
-| RPG-01 | Role Playing pack v1 data | CLAUDE | TODO | Depends on PK-01. |
+| RPG-01 | Role Playing pack v1 data | CLAUDE | IN-PROGRESS (CLAUDE, 2026-11-17) | Depends on PK-01. Branch `pax/rung5-rpg01-20261117` (main + programme tracker + PK-01 merged). Claimed 2026-11-17. |
 | RPG-02 | RPG playtest generators (traverse floors as a player would) | CLAUDE + LOCAL | TODO | LOCAL runs traversal batches; results are evidence, not verdicts. |
 | TEACH-01 | Teaching layer v1 | CLAUDE | TODO | Both kinds land in the Educational secondary pack. |
 | SYS-11a | progression_dag recommended-prerequisite edges | CLAUDE | TODO | From P0-4 amendment. |
