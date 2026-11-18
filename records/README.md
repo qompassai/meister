@@ -66,3 +66,17 @@ inputs), `meister_asset_route` (optional `mode` input),
 `meister_project_inspect` (the `genesis` output). The
 asset handlers themselves landed at this rung against
 schemas born at Rung 0.
+
+## rung5/
+
+One promotion record per tool whose served definition
+changed at Rung 5, same envelope and convention:
+`meister_scene_define` (the optional `stage` input — the
+STAGE scene idiom's part tables, camera rig, and room
+composition) and `meister_scene_validate` (the
+`stage_findings` output — the embeddedness verdict rows).
+STAGE-01's checks transcribe the ruled embeddedness bar
+(D-1658), the removed standing panel (D-1672), and the
+Niflheim scene rounds' convicted and cured forms (C1–C7,
+S15–S18). Rung 5 items that change no served definition
+get no record.

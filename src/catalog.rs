@@ -693,12 +693,13 @@ pub fn specs() -> Vec<ToolSpec> {
             rung: 2,
             record_carrying: true,
             profiles: &[PROFILE_SYSTEMS],
-            description: "Define a scene graph record: nodes, dialogue links, and composition for one scene.",
+            description: "Define a scene graph record: nodes, dialogue links, and composition for one scene. An optional stage block carries the STAGE scene idiom (part tables, camera rig, room composition) whose verdict scene_validate returns.",
             input: record_input(
                 &[
                     ("project_id", s()),
                     ("scene_id", s()),
                     ("graph", free_obj()),
+                    ("stage", free_obj()),
                 ],
                 &["project_id", "scene_id", "graph"],
             ),
@@ -740,7 +741,7 @@ pub fn specs() -> Vec<ToolSpec> {
             rung: 2,
             record_carrying: false,
             profiles: &[PROFILE_SYSTEMS],
-            description: "Validate an authored scene record: malformed shapes are typed refusals, never crashes.",
+            description: "Validate an authored scene record: malformed shapes are typed refusals, never crashes. A record carrying a stage block also earns the STAGE embeddedness verdict: refusal codes merge into refusals, and every stage finding lands in stage_findings.",
             input: read_input(
                 &[("project_id", s()), ("scene_id", s())],
                 &["project_id", "scene_id"],
@@ -749,6 +750,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 ("scene_id", s()),
                 ("valid", boolean()),
                 ("refusals", arr(s())),
+                ("stage_findings", arr(free_obj())),
             ]),
             annotations: read_ann(),
         },
