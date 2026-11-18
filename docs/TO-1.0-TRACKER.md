@@ -44,7 +44,7 @@ its rows as work moves.
 | RPG-02 | RPG playtest generators (traverse floors as a player would) | CLAUDE + LOCAL | TODO | LOCAL runs traversal batches; results are evidence, not verdicts. |
 | TEACH-01 | Teaching layer v1 | CLAUDE | TODO | Both kinds land in the Educational secondary pack. |
 | SYS-11a | progression_dag recommended-prerequisite edges | CLAUDE | DONE-PENDING-GATE (CLAUDE lane sys11-teach, 2026-11-18) | From P0-4 amendment. Branch `pax/rung5-sys11-teach-20261117` @ `b04d325`: nodes carry `recommends` beside `requires`; advisory only (hard edges decide reachability); emit adds a `*_RECOMMENDED` guidance const, hard-edge-only emit byte-identical. Lane gates (`meister-sys11-teach-20261117/gates/sys11a-final/`): fmt/clippy/test rc=0, 221/0 (8 new: 4 validation + 4 adversarial); mutation control 4/8 red; theodolite copy-route PASS (`gates/theo-sys11a.out`). |
-| SYS-11b | chamber->scene record references checked at compose | CLAUDE | TODO | From P0-4 amendment. |
+| SYS-11b | chamber->scene record references checked at compose | CLAUDE | CLAIMED (CLAUDE lane sys11-teach, 2026-11-18) | From P0-4 amendment. Branch `pax/rung5-sys11-teach-20261117`. |
 | PK-02 | Second-pack smoke: data-only Puzzle pack skeleton against PK-01 schema | ASTRA | TODO | Depends on PK-01. No code changes to the mechanism. |
 | STAGE-01 | STAGE scene record (ruled scene idiom as data) | - | BLOCKED | Owner's R3-S5 verdict outstanding. The rung ships without it if the verdict has not landed. |
 | NIF-02 | Worked example: one Niflheim floor end to end through Meister | PAX + CLAUDE | TODO | Owner gates the floor's verdict pack. |
