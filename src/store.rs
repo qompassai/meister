@@ -49,6 +49,7 @@
 //! stale: it describes a state that is gone.
 
 use crate::graph::{self, GraphError};
+use crate::pack;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -1110,17 +1111,33 @@ impl Store {
     fn plan_define_system(&self, args: &Value) -> StoreResult<Planned> {
         let project_id = arg_id(args, "project_id")?;
         let system_id = arg_id(args, "system_id")?;
-        self.read_project(&project_id)?;
+        let project = self.read_project(&project_id)?;
         let kind = req_text(args, "kind", MAX_ID_CHARS)?;
-        if !SYSTEM_KINDS.contains(&kind.as_str()) {
+        let is_pack = kind == pack::PACK_SYSTEM_KIND;
+        if !is_pack && !SYSTEM_KINDS.contains(&kind.as_str()) {
             return Err(StoreError::invalid(format!("unknown system kind {kind}")));
         }
         let spec = args
             .get("spec")
             .filter(|v| v.is_object())
             .ok_or_else(|| StoreError::invalid_record("spec must be an object"))?;
-        let flags = self.declared_flags(&project_id)?;
-        validate_system_spec(&kind, spec, &flags)?;
+        let pack_kind = match (is_pack, args.get("pack_kind")) {
+            (true, _) => Some(req_text(args, "pack_kind", MAX_ID_CHARS)?),
+            (false, None) => None,
+            (false, Some(_)) => {
+                return Err(StoreError::invalid(format!(
+                    "pack_kind is only for kind {}; {kind} is a core system kind",
+                    pack::PACK_SYSTEM_KIND
+                )));
+            }
+        };
+        match &pack_kind {
+            Some(pack_kind) => self.validate_pack_record(&project_id, &project, pack_kind, spec)?,
+            None => {
+                let flags = self.declared_flags(&project_id)?;
+                validate_system_spec(&kind, spec, &flags)?;
+            }
+        }
         let file = self.system_file(&project_id, &system_id);
         self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
@@ -1133,7 +1150,7 @@ impl Store {
             .get("envelope")
             .cloned()
             .ok_or_else(|| StoreError::invalid("envelope is required"))?;
-        let record = json!({
+        let mut record = json!({
             "record_type": "meister_system",
             "schema_version": 1,
             "project_id": project_id,
@@ -1143,6 +1160,9 @@ impl Store {
             "envelope": envelope,
             "spec": spec,
         });
+        if let Some(pack_kind) = pack_kind {
+            record["pack_kind"] = json!(pack_kind);
+        }
         let body = json!({
             "project_id": project_id,
             "system_id": system_id,
@@ -1154,6 +1174,43 @@ impl Store {
             write: Some((file, record)),
             body,
         })
+    }
+
+    /// RPG-01 — the live call path of pack selection (PK-01). The
+    /// project's own primary and secondary genre packs select which
+    /// pack kinds exist for it; the selected kind's validator runs
+    /// against `spec`, and its `ref` fields resolve against the
+    /// project's `systems/` family: a core system record by `kind`,
+    /// a pack record by `pack_kind`. Pure: nothing is written here.
+    fn validate_pack_record(
+        &self,
+        project_id: &str,
+        project: &Value,
+        pack_kind: &str,
+        spec: &Value,
+    ) -> StoreResult<()> {
+        let to_store = |e: pack::PackError| StoreError::new(e.code, e.message);
+        let registry = pack::Registry::compiled()
+            .map_err(|e| StoreError::new("pack_catalog_invalid", e.to_string()))?;
+        let primary = project["genre_pack"].as_str().unwrap_or_default();
+        let secondaries: Vec<&str> = project["secondary_genre_packs"]
+            .as_array()
+            .map(|list| list.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let selection = registry.select(primary, &secondaries).map_err(to_store)?;
+        let systems = self.read_system_records(project_id)?;
+        let resolves = |target: &str, id: &str| {
+            systems.iter().any(|(_, r)| {
+                r["system_id"].as_str() == Some(id)
+                    && match r["kind"].as_str() {
+                        Some(pack::PACK_SYSTEM_KIND) => r["pack_kind"].as_str() == Some(target),
+                        other => other == Some(target),
+                    }
+            })
+        };
+        selection
+            .validate(pack_kind, spec, &resolves)
+            .map_err(to_store)
     }
 
     /// The project's system records as (relative path, record),
@@ -4110,8 +4167,9 @@ fn census_references(
     (references, duplicate_ids)
 }
 
-/// The six system kinds (SYS-02..07), matching the catalog's
-/// `meister_system_define` kind enum.
+/// The six system kinds (SYS-02..07). The catalog's
+/// `meister_system_define` kind enum is these plus
+/// `pack::PACK_SYSTEM_KIND` (RPG-01), the carrier for pack records.
 pub(crate) const SYSTEM_KINDS: &[&str] = &[
     "schedule",
     "flags",
@@ -8094,6 +8152,303 @@ mod tests {
             .unwrap();
         let err = store.emit(&args).unwrap_err();
         assert_eq!(err.code, "defaults_unconfirmed");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------- RPG-01: the Role Playing pack on its live call path ----------
+
+    const RPG_PACK: &str = include_str!("../packs/role_playing/pack.json");
+
+    /// A project whose primary genre pack is `primary`, with
+    /// `secondaries`; its id is `first-light`.
+    fn genre_scaffolded(name: &str, primary: &str, secondaries: &[&str]) -> (Store, PathBuf) {
+        let (store, root) = temp_store(name);
+        let mut args = create_args();
+        args["genre_pack"] = json!(primary);
+        if !secondaries.is_empty() {
+            args["secondary_genre_packs"] = json!(secondaries);
+        }
+        store.create_project(&args).unwrap();
+        (store, root)
+    }
+
+    fn pack_args(system_id: &str, pack_kind: &str, spec: Value) -> Value {
+        let mut args = system_args(system_id, pack::PACK_SYSTEM_KIND, spec);
+        args["pack_kind"] = json!(pack_kind);
+        args
+    }
+
+    fn rpg_template(template_id: &str) -> Value {
+        let pack: Value = serde_json::from_str(RPG_PACK).unwrap();
+        pack["systems_templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["template_id"] == template_id)
+            .unwrap_or_else(|| panic!("template {template_id}"))["spec"]
+            .clone()
+    }
+
+    /// A FOE behaviour table (the pack's template) and one FOE on it.
+    fn with_rpg_foe(name: &str) -> (Store, PathBuf) {
+        let (store, root) = genre_scaffolded(name, "role_playing", &[]);
+        store
+            .define_system(&system_args(
+                "wisp-ai",
+                "state_machine",
+                rpg_template("foe_behaviour"),
+            ))
+            .unwrap();
+        let foe = json!({"display_name": "Wisp", "behaviour": "wisp-ai", "tier": 1,
+            "schema_rev": 1});
+        store.define_system(&pack_args("wisp", "foe", foe)).unwrap();
+        (store, root)
+    }
+
+    /// RPG-01 "Validation: the templates instantiate" — every
+    /// template of the compiled pack, through the real tools: system
+    /// templates via `meister_system_define`, floor and region
+    /// templates (SYS-09 layouts) via `meister_level_compose`.
+    #[test]
+    fn every_rpg_template_instantiates_on_an_rpg_project() {
+        let (store, root) = genre_scaffolded("rpg-templates", "role_playing", &[]);
+        let pack: Value = serde_json::from_str(RPG_PACK).unwrap();
+        let templates = pack["systems_templates"].as_array().unwrap();
+        assert_eq!(templates.len(), 5);
+        let mut levels = 0;
+        for t in templates {
+            let id = t["template_id"].as_str().unwrap().replace('_', "-");
+            let kind = t["system_kind"].as_str().unwrap();
+            if kind == pack::LEVEL_TEMPLATE {
+                let mut args = level_args(t["spec"].clone());
+                args["level_id"] = json!(id);
+                store
+                    .compose_level(&args)
+                    .unwrap_or_else(|e| panic!("{id}: {e:?}"));
+                levels += 1;
+            } else {
+                store
+                    .define_system(&system_args(&id, kind, t["spec"].clone()))
+                    .unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            }
+        }
+        assert_eq!(levels, 2, "a floor and a region template");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RPG-01 "Done when: the pack loads and its validators run on
+    /// an RPG project" — every kind of the pack, on its live path.
+    #[test]
+    fn every_rpg_kind_validates_on_an_rpg_project() {
+        let (store, root) = with_rpg_foe("rpg-kinds");
+        let records = [
+            (
+                "wisp-pack",
+                "encounter",
+                json!({"foes": ["wisp"], "weight": 3, "min_depth": 1, "schema_rev": 1}),
+            ),
+            (
+                "floor-1-table",
+                "encounter_table",
+                json!({"encounters": ["wisp-pack"], "steps_per_roll": 16, "schema_rev": 1}),
+            ),
+            (
+                "wisp-genesis",
+                "enemy_genesis_hook",
+                json!({"foe": "wisp", "variant_table": "roguelike:wisp-variants",
+                    "schema_rev": 1}),
+            ),
+            (
+                "warden-portraits",
+                "portrait_set",
+                json!({"character_id": "warden", "expressions": ["calm", "stern"],
+                    "schema_rev": 2, "migrated_from": {"schema_rev": 1,
+                    "migration": "rev1-to-rev2"}}),
+            ),
+            (
+                "hit-flash",
+                "combat_effect",
+                json!({"trigger": "on_hit", "hitstop_ms": 60, "schema_rev": 1}),
+            ),
+            (
+                "floor-1-theme",
+                "music_cue",
+                json!({"midi_asset_id": "theme-1-mid", "loops": true, "schema_rev": 1}),
+            ),
+            (
+                "rev1-to-rev2",
+                "data_migration",
+                json!({"from_rev": 1, "to_rev": 2, "kinds": ["portrait_set"],
+                    "steps": [{"rename": ["faces", "expressions"]}], "reversible": true}),
+            ),
+        ];
+        for (id, kind, spec) in records {
+            let body = store
+                .define_system(&pack_args(id, kind, spec))
+                .unwrap_or_else(|e| panic!("{kind}: {e:?}"));
+            assert_eq!(body["kind"], "pack");
+            let rec = read_json_file(&root.join(format!("first-light/systems/{id}.json")))
+                .unwrap()
+                .unwrap();
+            assert_eq!(rec["pack_kind"], kind);
+            assert_eq!(rec["status"], "candidate");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Selection follows the project: the RPG pack as a secondary
+    /// selects its kinds just as a primary does.
+    #[test]
+    fn a_secondary_role_playing_pack_selects_its_kinds() {
+        let (store, root) = genre_scaffolded("rpg-secondary", "puzzle", &["role_playing"]);
+        store
+            .define_system(&system_args(
+                "wisp-ai",
+                "state_machine",
+                rpg_template("foe_behaviour"),
+            ))
+            .unwrap();
+        let foe = json!({"display_name": "Wisp", "behaviour": "wisp-ai", "tier": 1,
+            "schema_rev": 1});
+        assert_eq!(
+            store.define_system(&pack_args("wisp", "foe", foe)).unwrap()["kind"],
+            "pack"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A pack record joins the composed floor: a level's encounter
+    /// places an RPG encounter table by its system id.
+    #[test]
+    fn a_level_places_an_rpg_encounter_table() {
+        let (store, root) = with_rpg_foe("rpg-level");
+        store
+            .define_system(&pack_args(
+                "wisp-pack",
+                "encounter",
+                json!({"foes": ["wisp"], "weight": 1, "schema_rev": 1}),
+            ))
+            .unwrap();
+        store
+            .define_system(&pack_args(
+                "floor-1-table",
+                "encounter_table",
+                json!({"encounters": ["wisp-pack"], "steps_per_roll": 16, "schema_rev": 1}),
+            ))
+            .unwrap();
+        let mut layout = rpg_template("region_descent");
+        layout["encounters"] = json!([{"id": "e1", "floor_id": "floor-1",
+            "chamber": "vault", "system_id": "floor-1-table"}]);
+        let body = store.compose_level(&level_args(layout)).unwrap();
+        assert_eq!(body["floor_count"], 3);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RPG-01 adversarial: a FOE behaviour table (the pack's own
+    /// template) with a transition into an undeclared state.
+    #[test]
+    fn adv_a_foe_table_with_an_undeclared_state_is_refused() {
+        let (store, root) = genre_scaffolded("rpg-undeclared-state", "role_playing", &[]);
+        let mut table = rpg_template("foe_behaviour");
+        table["transitions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"from": "chase", "to": "berserk"}));
+        let before = tree(&root);
+        let err = store
+            .define_system(&system_args("wisp-ai", "state_machine", table))
+            .unwrap_err();
+        assert_eq!(err.code, "state_undeclared");
+        assert!(err.message.contains("berserk"), "{}", err.message);
+        assert_eq!(tree(&root), before, "refusal is pre-mutation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RPG-01 adversarial: an encounter referencing an undeclared
+    /// FOE; and a FOE whose behaviour names no behaviour table.
+    #[test]
+    fn adv_an_encounter_referencing_an_undeclared_foe_is_refused() {
+        let (store, root) = with_rpg_foe("rpg-undeclared-foe");
+        let before = tree(&root);
+        let enc = json!({"foes": ["wisp", "frost-giant"], "weight": 1, "schema_rev": 1});
+        let err = store
+            .define_system(&pack_args("giants", "encounter", enc))
+            .unwrap_err();
+        assert_eq!(err.code, "graph_dangling_ref");
+        assert!(err.message.contains("frost-giant"), "{}", err.message);
+        let foe = json!({"display_name": "Giant", "behaviour": "giant-ai", "tier": 3,
+            "schema_rev": 1});
+        let err = store
+            .define_system(&pack_args("giant", "foe", foe))
+            .unwrap_err();
+        assert_eq!(err.code, "graph_dangling_ref");
+        assert_eq!(tree(&root), before, "refusals are pre-mutation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The region template is a SYS-09 shape, so the descent law
+    /// binds it: a region with a floor skipped by the stairs, or
+    /// a one-way stair, is refused when instantiated.
+    #[test]
+    fn adv_a_region_template_breaking_the_descent_law_is_refused() {
+        let (store, root) = genre_scaffolded("rpg-region-law", "role_playing", &[]);
+        let before = tree(&root);
+        let mut skipped = rpg_template("region_descent");
+        skipped["stairs"].as_array_mut().unwrap().pop();
+        let err = store.compose_level(&level_args(skipped)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        let mut one_way = rpg_template("region_descent");
+        one_way["stairs"][0]["direction"] = json!("down");
+        let err = store.compose_level(&level_args(one_way)).unwrap_err();
+        assert_eq!(err.code, "descent_violation");
+        assert_eq!(tree(&root), before, "refusals are pre-mutation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Selection is real: a project that did not select the RPG
+    /// pack cannot author its kinds.
+    #[test]
+    fn adv_an_rpg_kind_on_a_project_without_the_pack_is_refused() {
+        let (store, root) = genre_scaffolded("rpg-unselected", "puzzle", &["educational"]);
+        let before = tree(&root);
+        let enc = json!({"foes": [], "weight": 1, "schema_rev": 1});
+        let err = store
+            .define_system(&pack_args("e", "encounter", enc))
+            .unwrap_err();
+        assert_eq!(err.code, "pack_kind_not_selected");
+        assert_eq!(tree(&root), before, "refusal is pre-mutation");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Carrier misuse: kind pack without pack_kind, pack_kind on a
+    /// core kind, a record breaking its kind, an unknown pack kind.
+    #[test]
+    fn adv_pack_carrier_misuse_is_refused() {
+        let (store, root) = with_rpg_foe("rpg-misuse");
+        let before = tree(&root);
+        let spec = json!({"foes": ["wisp"], "weight": 1, "schema_rev": 1});
+        let bare = system_args("e", pack::PACK_SYSTEM_KIND, spec.clone());
+        assert_eq!(
+            store.define_system(&bare).unwrap_err().code,
+            "invalid_input"
+        );
+        let mut core = system_args("f", "flags", flags_spec());
+        core["pack_kind"] = json!("foe");
+        assert_eq!(
+            store.define_system(&core).unwrap_err().code,
+            "invalid_input"
+        );
+        let mut no_rev = spec.clone();
+        no_rev.as_object_mut().unwrap().remove("schema_rev");
+        let err = store
+            .define_system(&pack_args("e", "encounter", no_rev))
+            .unwrap_err();
+        assert_eq!(err.code, "record_invalid");
+        let err = store
+            .define_system(&pack_args("e", "dragon", spec))
+            .unwrap_err();
+        assert_eq!(err.code, "pack_kind_not_selected");
+        assert_eq!(tree(&root), before, "refusals are pre-mutation");
         let _ = fs::remove_dir_all(&root);
     }
 }

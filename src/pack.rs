@@ -23,6 +23,16 @@
 //! A project's primary and secondary packs select which kinds'
 //! validators run (`Registry::select`); a record of a kind no
 //! selected pack declares is refused with `pack_kind_not_selected`.
+//! The live call path is `meister_system_define` with kind `pack`
+//! (RPG-01): one fixed enum value and one `pack_kind` input, the
+//! same whatever packs are compiled in, so the invariant holds.
+//!
+//! A field may declare `ref`: its value (a string, or an array of
+//! strings) names records of that kind — a core system kind or a
+//! kind of the same pack — and each must resolve in the project, or
+//! the record is refused with `graph_dangling_ref`. A systems
+//! template may target `level`: its spec is a SYS-09 layout,
+//! instantiated through `meister_level_compose`.
 //!
 //! Every check is bounded by the constants below, and every
 //! refusal is typed. Validation is pure: no store, no files.
@@ -41,9 +51,19 @@ pub const PACK_SCHEMA: &str = "meister-pack/1";
 /// A pack lands by adding its file under `packs/<slug>/` and one
 /// line here, e.g.
 /// `("role_playing", include_str!("../packs/role_playing/pack.json"))`.
-/// PK-01 lands the mechanism only; the first packs are later
-/// commissions (RPG-01, TEACH-01, PK-02).
-const COMPILED: &[(&str, &str)] = &[];
+/// PK-01 landed the mechanism; RPG-01 lands the first pack.
+const COMPILED: &[(&str, &str)] = &[(
+    "role_playing",
+    include_str!("../packs/role_playing/pack.json"),
+)];
+
+/// The `meister_system_define` kind that carries a pack record. A
+/// pack kind may never take this name.
+pub const PACK_SYSTEM_KIND: &str = "pack";
+
+/// The template target that is a SYS-09 level layout rather than
+/// a system spec.
+pub const LEVEL_TEMPLATE: &str = "level";
 
 /// The media-map formats lumen owns (README §"The media map";
 /// AST-05's route map). `voice` is the one asset kind that is
@@ -96,6 +116,8 @@ const MAX_GENERATORS: usize = 32;
 const MAX_GATES: usize = 64;
 const MAX_BUDGET_KEYS: usize = 16;
 const MAX_SECONDARY_PACKS: usize = 12;
+/// The most ids one `ref` array field may name.
+const MAX_REF_ITEMS: usize = 256;
 
 const TOP_KEYS: &[&str] = &[
     "schema",
@@ -115,7 +137,8 @@ pub struct PackError {
     /// Stable code: `pack_invalid`, `pack_unknown_field`,
     /// `pack_declares_tool`, `pack_kind_collision`,
     /// `pack_format_not_lumen`, `pack_too_large`,
-    /// `pack_kind_not_selected`, `record_invalid`.
+    /// `pack_kind_not_selected`, `record_invalid`,
+    /// `graph_dangling_ref`.
     pub code: &'static str,
     /// Human-readable reason.
     pub message: String,
@@ -181,6 +204,8 @@ pub struct FieldDef {
     pub name: String,
     pub field_type: FieldType,
     pub required: bool,
+    /// The kind whose records this field's value names, if any.
+    pub ref_kind: Option<String>,
 }
 
 /// One specialised record kind and its field table.
@@ -241,10 +266,15 @@ pub struct Selection<'a> {
 /// Validate the compiled-in packs. Run before anything is served:
 /// a build carrying an invalid pack refuses to start.
 pub fn check_compiled() -> PackResult<usize> {
-    Registry::from_sources(COMPILED).map(|r| r.packs.len())
+    Registry::compiled().map(|r| r.packs.len())
 }
 
 impl Registry {
+    /// The packs compiled into this build.
+    pub fn compiled() -> PackResult<Self> {
+        Self::from_sources(COMPILED)
+    }
+
     /// Validate each `(slug, pack.json)` source and the set as a
     /// whole: slugs unique, and no kind declared by two packs.
     pub fn from_sources(sources: &[(&str, &str)]) -> PackResult<Self> {
@@ -288,13 +318,6 @@ impl Registry {
     /// The packs a project with this primary and these secondaries
     /// selects. A genre whose pack has not landed contributes no
     /// kinds; a slug that is no genre at all is refused.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "PK-01 lands the mechanism; RPG-01 wires a carrier"
-        )
-    )]
     pub fn select(&self, primary: &str, secondaries: &[&str]) -> PackResult<Selection<'_>> {
         if secondaries.len() > MAX_SECONDARY_PACKS {
             return Err(PackError::invalid("secondary packs exceed their bound"));
@@ -318,18 +341,19 @@ impl Registry {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "PK-01 lands the mechanism; RPG-01 wires a carrier"
-    )
-)]
 impl Selection<'_> {
     /// Run the selected validator for `kind` against `record`: the
     /// record is an object, every required field is present, every
-    /// present field is declared and carries its declared type.
-    pub fn validate(&self, kind: &str, record: &Value) -> PackResult<()> {
+    /// present field is declared and carries its declared type, and
+    /// every `ref` field's ids resolve. `resolves(kind, id)` answers
+    /// whether the project holds a record `id` of `kind`; it is the
+    /// caller's view of the store, so validation stays pure here.
+    pub fn validate(
+        &self,
+        kind: &str,
+        record: &Value,
+        resolves: &dyn Fn(&str, &str) -> bool,
+    ) -> PackResult<()> {
         let Some(def) = self
             .packs
             .iter()
@@ -370,8 +394,50 @@ impl Selection<'_> {
                 format!("{kind} declares no field {extra}"),
             ));
         }
+        for field in &def.fields {
+            let (Some(target), Some(value)) = (&field.ref_kind, obj.get(&field.name)) else {
+                continue;
+            };
+            check_refs(kind, &field.name, target, value, resolves)?;
+        }
         Ok(())
     }
+}
+
+/// Every id a `ref` field names resolves to a record of `target`.
+/// The field's type (string or array) was checked by the caller.
+fn check_refs(
+    kind: &str,
+    field: &str,
+    target: &str,
+    value: &Value,
+    resolves: &dyn Fn(&str, &str) -> bool,
+) -> PackResult<()> {
+    let ids: Vec<&Value> = match value {
+        Value::Array(items) => items.iter().collect(),
+        single => vec![single],
+    };
+    if ids.len() > MAX_REF_ITEMS {
+        return Err(PackError::new(
+            "record_invalid",
+            format!("{kind} field {field} names over {MAX_REF_ITEMS} records"),
+        ));
+    }
+    for id in ids {
+        let id = id.as_str().ok_or_else(|| {
+            PackError::new(
+                "record_invalid",
+                format!("{kind} field {field} names records by string id"),
+            )
+        })?;
+        if !resolves(target, id) {
+            return Err(PackError::new(
+                "graph_dangling_ref",
+                format!("{kind} field {field} names undeclared {target} {id}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Parse and validate one pack document.
@@ -423,6 +489,7 @@ fn parse_pack(text: &str, tool_names: &BTreeSet<&'static str>) -> PackResult<Pac
     let gates = parse_list(top, "gates", MAX_GATES, |v| {
         parse_named(v, "gate_id", &mut ids)
     })?;
+    check_ref_targets(&kinds)?;
     let mut seen_emitters = BTreeSet::new();
     let emitters = parse_list(top, "emitters", EMITTERS.len(), |v| {
         let name = v
@@ -508,9 +575,32 @@ impl<'t> IdSpace<'t> {
     }
 }
 
+/// Every `ref` names a core system kind or a kind this pack
+/// declares: a reference no project could ever satisfy is a broken
+/// pack, refused at load rather than at every record.
+fn check_ref_targets(kinds: &[KindDef]) -> PackResult<()> {
+    for def in kinds {
+        for field in &def.fields {
+            let Some(target) = &field.ref_kind else {
+                continue;
+            };
+            let known =
+                SYSTEM_KINDS.contains(&target.as_str()) || kinds.iter().any(|k| &k.kind == target);
+            if !known {
+                return Err(PackError::invalid(format!(
+                    "{}.{} refs {target}, which is no core system kind and no kind of this pack",
+                    def.kind, field.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// True when `kind` is a name the core owns.
 fn is_core_kind(kind: &str) -> bool {
-    kind.starts_with(CORE_PREFIX)
+    kind == PACK_SYSTEM_KIND
+        || kind.starts_with(CORE_PREFIX)
         || SYSTEM_KINDS.contains(&kind)
         || ASSET_KINDS.contains(&kind)
         || CORE_RECORD_KINDS.contains(&kind)
@@ -528,7 +618,7 @@ fn parse_kind(value: &Value, ids: &mut IdSpace<'_>) -> PackResult<KindDef> {
     }
     let mut names = BTreeSet::new();
     let fields = parse_list(obj, "fields", MAX_FIELDS, |v| {
-        let f = closed_object(v, &["name", "type", "required"], "field")?;
+        let f = closed_object(v, &["name", "type", "required", "ref"], "field")?;
         let name = req_str(f, "name", "field", MAX_ID_CHARS)?;
         if !is_id(name) {
             return Err(PackError::invalid(format!(
@@ -548,10 +638,23 @@ fn parse_kind(value: &Value, ids: &mut IdSpace<'_>) -> PackResult<KindDef> {
             .get("required")
             .and_then(Value::as_bool)
             .ok_or_else(|| PackError::invalid(format!("field {name} needs a boolean required")))?;
+        let ref_kind = match f.get("ref") {
+            None => None,
+            Some(_) => {
+                let target = req_str(f, "ref", "field", MAX_ID_CHARS)?;
+                if !matches!(field_type, FieldType::String | FieldType::Array) {
+                    return Err(PackError::invalid(format!(
+                        "field {name} refs {target} but is neither string nor array"
+                    )));
+                }
+                Some(target.to_string())
+            }
+        };
         Ok(FieldDef {
             name: name.to_string(),
             field_type,
             required,
+            ref_kind,
         })
     })?;
     if fields.is_empty() {
@@ -570,9 +673,9 @@ fn parse_template(value: &Value, ids: &mut IdSpace<'_>) -> PackResult<Template> 
     let template_id = req_str(obj, "template_id", "template", MAX_ID_CHARS)?;
     ids.claim(template_id, "template")?;
     let system_kind = req_str(obj, "system_kind", "template", MAX_ID_CHARS)?;
-    if !SYSTEM_KINDS.contains(&system_kind) {
+    if !SYSTEM_KINDS.contains(&system_kind) && system_kind != LEVEL_TEMPLATE {
         return Err(PackError::invalid(format!(
-            "template {template_id} names {system_kind}, which is no core system kind"
+            "template {template_id} names {system_kind}, which is no core system kind nor level"
         )));
     }
     let spec = obj.get("spec").filter(|v| v.is_object()).ok_or_else(|| {
@@ -728,6 +831,13 @@ mod tests {
         Registry::from_sources(sources)
     }
 
+    /// A resolver for a project that holds no records.
+    pub(super) fn no_refs(_kind: &str, _id: &str) -> bool {
+        false
+    }
+
+    pub(super) const ROLE_PLAYING: &str = include_str!("../packs/role_playing/pack.json");
+
     /// A synthetic pack for `slug` with one kind, one template, one
     /// media entry, one generator and one gate, all ids prefixed by
     /// the slug so packs never collide with each other.
@@ -849,8 +959,8 @@ mod tests {
         let reg = registry(&[("role_playing", &a), ("educational", &b)]).unwrap();
         let rec = json!({"id": "x"});
         let both = reg.select("role_playing", &["educational"]).unwrap();
-        assert_eq!(both.validate("role_playing_piece", &rec), Ok(()));
-        assert_eq!(both.validate("educational_piece", &rec), Ok(()));
+        assert_eq!(both.validate("role_playing_piece", &rec, &no_refs), Ok(()));
+        assert_eq!(both.validate("educational_piece", &rec, &no_refs), Ok(()));
         // A genre whose pack has not landed selects nothing, and is
         // not an error.
         let none = reg.select("platformer", &[]).unwrap();
@@ -862,10 +972,116 @@ mod tests {
         let reg = registry(&[("rhythm", FULL)]).unwrap();
         let sel = reg.select("rhythm", &[]).unwrap();
         let required_only = json!({"chart_id": "c1", "bpm": 120, "notes": []});
-        assert_eq!(sel.validate("beat_chart", &required_only), Ok(()));
+        assert_eq!(sel.validate("beat_chart", &required_only, &no_refs), Ok(()));
         let with_optional = json!({"chart_id": "c1", "bpm": 120, "notes": [1, 2],
             "practice_only": true, "timing_window": {"ms": 40}});
-        assert_eq!(sel.validate("beat_chart", &with_optional), Ok(()));
+        assert_eq!(sel.validate("beat_chart", &with_optional, &no_refs), Ok(()));
+    }
+
+    /// RPG-01: the Role Playing pack carries its whole v1 surface —
+    /// FOE/encounter/genesis/media/migration kinds, floor and region
+    /// templates (SYS-09 level layouts), a FOE behaviour table, the
+    /// media profile, generators, gates — and every kind carries the
+    /// version-migration fields.
+    #[test]
+    fn the_role_playing_pack_loads_with_its_full_surface() {
+        let reg = Registry::compiled().expect("compiled packs validate");
+        let pack = reg
+            .packs
+            .iter()
+            .find(|p| p.slug == "role_playing")
+            .expect("role_playing is compiled in");
+        let kinds: Vec<&str> = pack.kinds.iter().map(|k| k.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "foe",
+                "encounter",
+                "encounter_table",
+                "enemy_genesis_hook",
+                "portrait_set",
+                "combat_effect",
+                "music_cue",
+                "data_migration"
+            ]
+        );
+        for def in pack.kinds.iter().filter(|k| k.kind != "data_migration") {
+            let field = |name: &str| def.fields.iter().find(|f| f.name == name);
+            let rev = field("schema_rev").expect("schema_rev");
+            assert!(
+                rev.required && rev.field_type == FieldType::Integer,
+                "{}",
+                def.kind
+            );
+            let from = field("migrated_from").expect("migrated_from");
+            assert!(
+                !from.required && from.field_type == FieldType::Object,
+                "{}",
+                def.kind
+            );
+        }
+        let targets: Vec<(&str, &str)> = pack
+            .systems_templates
+            .iter()
+            .map(|t| (t.template_id.as_str(), t.system_kind.as_str()))
+            .collect();
+        assert!(targets.contains(&("foe_behaviour", "state_machine")));
+        assert!(targets.contains(&("floor_cave", LEVEL_TEMPLATE)));
+        assert!(targets.contains(&("region_descent", LEVEL_TEMPLATE)));
+        let formats: Vec<&str> = pack
+            .media_profile
+            .iter()
+            .map(|m| m.format.as_str())
+            .collect();
+        assert_eq!(
+            formats,
+            ["pixel", "model_3d", "still_2d", "audio", "effect"]
+        );
+        assert!(
+            pack.playtest_generators
+                .iter()
+                .any(|g| g.id == "floor_traversal")
+        );
+        assert_eq!(pack.emitters, ["bevy-rust-content/1"]);
+    }
+
+    #[test]
+    fn a_ref_field_resolves_through_the_projects_records() {
+        let reg = registry(&[("role_playing", ROLE_PLAYING)]).unwrap();
+        let sel = reg.select("role_playing", &[]).unwrap();
+        let held = |kind: &str, id: &str| kind == "foe" && (id == "wisp" || id == "warg");
+        let rec = json!({"foes": ["wisp", "warg"], "weight": 3, "schema_rev": 1});
+        assert_eq!(sel.validate("encounter", &rec, &held), Ok(()));
+        let hook = json!({"foe": "wisp", "variant_table": "roguelike:wisp-variants",
+            "schema_rev": 1});
+        assert_eq!(sel.validate("enemy_genesis_hook", &hook, &held), Ok(()));
+    }
+
+    /// RPG-01's carrier keeps the invariant: `meister_system_define`
+    /// gains one fixed enum value, never a pack's kind names, and no
+    /// compiled pack kind appears anywhere in any served definition.
+    #[test]
+    fn the_carrier_enum_is_fixed_and_names_no_pack_kind() {
+        let specs = catalog::specs();
+        let spec = specs
+            .iter()
+            .find(|s| s.name == "meister_system_define")
+            .expect("carrier exists");
+        let mut expected: Vec<&str> = SYSTEM_KINDS.to_vec();
+        expected.push(PACK_SYSTEM_KIND);
+        assert_eq!(spec.input["properties"]["kind"]["enum"], json!(expected));
+        let served = serde_json::to_string(&catalog::tool_definitions(
+            catalog::PROFILES.last().expect("full profile"),
+        ))
+        .unwrap();
+        let reg = Registry::compiled().unwrap();
+        for def in reg.packs.iter().flat_map(|p| p.kinds.iter()) {
+            assert!(
+                !served.contains(&format!("\"{}\"", def.kind)),
+                "{}",
+                def.kind
+            );
+        }
     }
 
     /// The catalog invariant (PK-01's gate): the served surface —
@@ -900,7 +1116,7 @@ mod tests {
 /// The refusal half (`adv_`): every refusal is typed.
 #[cfg(test)]
 mod adversarial {
-    use super::tests::{FULL, registry, synthetic};
+    use super::tests::{FULL, ROLE_PLAYING, no_refs, registry, synthetic};
     use super::*;
     use serde_json::json;
 
@@ -965,7 +1181,7 @@ mod adversarial {
         let rec = json!({"chart_id": "c1", "bpm": 120, "notes": []});
         // The pack exists, but this project did not select it.
         let sel = reg.select("puzzle", &["strategy"]).unwrap();
-        let err = sel.validate("beat_chart", &rec).unwrap_err();
+        let err = sel.validate("beat_chart", &rec, &no_refs).unwrap_err();
         assert_eq!(err.code, "pack_kind_not_selected");
         // A slug that is no genre cannot be selected at all.
         assert_eq!(
@@ -984,7 +1200,7 @@ mod adversarial {
             json!({"chart_id": "c1", "bpm": 120, "notes": [], "cheat": 1}),
             json!(["not", "an", "object"]),
         ] {
-            let err = sel.validate("beat_chart", &bad).unwrap_err();
+            let err = sel.validate("beat_chart", &bad, &no_refs).unwrap_err();
             assert_eq!(err.code, "record_invalid", "{bad}");
         }
     }
@@ -993,6 +1209,54 @@ mod adversarial {
     fn adv_a_pack_bringing_its_own_emitter_is_refused() {
         let doc = edited(|d| d["emitters"] = json!(["rhythm-native/1"]));
         assert_eq!(code(&doc, "rhythm"), "pack_invalid");
+    }
+
+    /// A `ref` no project could satisfy (an unknown kind), or on a
+    /// field that cannot hold an id, is a broken pack.
+    #[test]
+    fn adv_a_ref_to_an_undeclared_kind_is_refused() {
+        let doc: Value = serde_json::from_str(ROLE_PLAYING).unwrap();
+        let mut unknown = doc.clone();
+        unknown["kinds"][1]["fields"][0]["ref"] = json!("dragon");
+        let err = registry(&[("role_playing", &unknown.to_string())]).unwrap_err();
+        assert_eq!(err.code, "pack_invalid");
+        assert!(err.message.contains("dragon"), "{}", err.message);
+        let mut on_int = doc;
+        on_int["kinds"][0]["fields"][2]["ref"] = json!("foe");
+        let err = registry(&[("role_playing", &on_int.to_string())]).unwrap_err();
+        assert_eq!(err.code, "pack_invalid");
+        // The carrier's own kind name is reserved.
+        let pack_kind = edited(|d| d["kinds"][0]["kind"] = json!(PACK_SYSTEM_KIND));
+        assert_eq!(code(&pack_kind, "rhythm"), "pack_kind_collision");
+    }
+
+    #[test]
+    fn adv_a_dangling_or_malformed_ref_in_a_record_is_refused() {
+        let reg = registry(&[("role_playing", ROLE_PLAYING)]).unwrap();
+        let sel = reg.select("role_playing", &[]).unwrap();
+        let held = |kind: &str, id: &str| kind == "foe" && id == "wisp";
+        let dangling = json!({"foes": ["wisp", "ghost"], "weight": 1, "schema_rev": 1});
+        let err = sel.validate("encounter", &dangling, &held).unwrap_err();
+        assert_eq!(err.code, "graph_dangling_ref");
+        assert!(err.message.contains("ghost"), "{}", err.message);
+        // Same id, wrong kind: a FOE id is not a behaviour table.
+        let foe = json!({"display_name": "Wisp", "behaviour": "wisp", "tier": 1,
+            "schema_rev": 1});
+        assert_eq!(
+            sel.validate("foe", &foe, &held).unwrap_err().code,
+            "graph_dangling_ref"
+        );
+        let not_ids = json!({"foes": [7], "weight": 1, "schema_rev": 1});
+        assert_eq!(
+            sel.validate("encounter", &not_ids, &held).unwrap_err().code,
+            "record_invalid"
+        );
+        let too_many: Vec<&str> = vec!["wisp"; MAX_REF_ITEMS + 1];
+        let flood = json!({"foes": too_many, "weight": 1, "schema_rev": 1});
+        assert_eq!(
+            sel.validate("encounter", &flood, &held).unwrap_err().code,
+            "record_invalid"
+        );
     }
 
     #[test]

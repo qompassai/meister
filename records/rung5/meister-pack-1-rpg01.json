@@ -1,0 +1,29 @@
+{
+    "asked": "Rung 5 RPG-01 additive amendment of meister-pack/1: optional field key ref (a core system kind or a kind of the same pack; values must resolve in the project, else graph_dangling_ref), the level template target (a SYS-09 layout instantiated through meister_level_compose), and pack reserved as a core kind. Packs without these keys are unchanged.",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 5, RPG-01 tests: encounter referencing an undeclared FOE; floor and region templates as SYS-09 shapes); synthetic fixtures only",
+    "origin_lane": "qompass",
+    "outcome_id": "rung5-meister-pack-1-rpg01",
+    "produced": [
+        {
+            "path": "packs/README.md",
+            "sha256": "b0a1e13dbb6b47c1667d8e6c7cfd28ee822770e52b95d6bf26b1cf1395fc3da5"
+        },
+        {
+            "path": "src/pack.rs",
+            "sha256": "fbe597bd33821aecb6c4c6508270c27a7a70f35ca19634631a513766f1d65484"
+        }
+    ],
+    "recorded_at_epoch": 1795003495,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}

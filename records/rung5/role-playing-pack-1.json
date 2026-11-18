@@ -1,0 +1,25 @@
+{
+    "asked": "Rung 5 RPG-01 birth of the Role Playing pack v1 data (role_playing 1.0.0): FOE behaviour tables as state_machine records, FOE/encounter/encounter-table kinds with resolved references, enemy-genesis hooks (variant-table reference only), floor and region templates (SYS-09), media profile (pixel, model_3d, still_2d portraits, MIDI-first audio, effect records), version-migration fields, generators, gates, emitter bevy-rust-content/1.",
+    "content_label": "sfw",
+    "cost": {
+        "disk_bytes": 0,
+        "tokens": 0,
+        "wall_secs": 0
+    },
+    "evidence": "docs/PATH-TO-1.0.md (Rung 5, RPG-01); validated by src/pack.rs at build start and by the RPG-01 tests on an RPG project; no Niflheim content",
+    "origin_lane": "qompass",
+    "outcome_id": "rung5-role-playing-pack-1",
+    "produced": [
+        {
+            "path": "packs/role_playing/pack.json",
+            "sha256": "5d85c691b332025db4d1ff0f30fca9269c94024ffb2573d8de34f1a983db7864"
+        }
+    ],
+    "recorded_at_epoch": 1795003495,
+    "result": "ok",
+    "server": "meister",
+    "skills": [
+        "tiger-style-rust"
+    ],
+    "verification": "self_reported"
+}
