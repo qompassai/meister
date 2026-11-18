@@ -30,6 +30,7 @@ mod lane;
 mod pack;
 mod server;
 mod store;
+mod teach;
 
 use std::process::ExitCode;
 use std::sync::Arc;

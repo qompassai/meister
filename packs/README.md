@@ -74,3 +74,33 @@ kinds' validators run. A record of a kind that no selected pack
 declares is `pack_kind_not_selected`; a record that breaks its
 kind is `record_invalid`. A genre whose pack has not landed yet
 selects no kinds.
+
+## Compiled packs
+
+### `educational` (TEACH-01, teaching layer v1)
+
+The Educational pack, selected as a secondary pack (e.g. primary
+`role_playing`, secondary `educational`). Its two kinds carry the
+teaching law in `src/teach.rs`, run by `Selection::validate` after
+the field table passes:
+
+| Kind | Fields | Law |
+|---|---|---|
+| `curriculum` (canon) | `curriculum_id`, `domain`, `codex_principle`, `failure_class` | Every field is non-empty text. |
+| `assessment_encounter` | `encounter_id`, `curriculum_id`, `embedding_pattern`, `gate_suite`, optional `quiz` | `embedding_pattern` is one of `lesson_as_mechanic`, `lesson_as_gate`, `assessment_as_encounter`, `narrative_quiz_frame`. `gate_suite` is closed: `path`, `sha256`, `validation_count`, `adversarial_count`. Meister never runs player code; the game does. |
+
+Typed refusals beyond the mechanism's: `split_unbalanced` (the
+recorded validation and adversarial counts differ), `suite_unhashed`
+(no SHA-256 on the suite), `embedding_mismatch` (an encounter
+carrying a `quiz` claims anything but `narrative_quiz_frame`, or
+`narrative_quiz_frame` without a quiz). Anything else malformed is
+`record_invalid`.
+
+The progress-state spec a teacher or learner inspects is the
+`learner_progress` systems template, a core `state_machine`:
+`unseen -> introduced -> practiced -> assessed -> mastered`, with
+`assessed -> practiced` for a failed assessment.
+
+Not yet checked (needs a carrier tool, an RPG-01 decision):
+that an encounter's `curriculum_id` names a curriculum record of
+the same project, and canon governance over curriculum records.

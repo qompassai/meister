@@ -6105,6 +6105,25 @@ mod tests {
         ]})
     }
 
+    /// TEACH-01: the Educational pack's progress-state template is
+    /// a state machine the core validator accepts as-is.
+    #[test]
+    fn teach01_learner_progress_template_defines_as_a_core_state_machine() {
+        let (store, root, _source) = scaffolded("teach01-progress");
+        let doc: Value =
+            serde_json::from_str(include_str!("../packs/educational/pack.json")).unwrap();
+        let template = &doc["systems_templates"][0];
+        assert_eq!(template["template_id"], "learner_progress");
+        store
+            .define_system(&system_args(
+                "learner-progress",
+                template["system_kind"].as_str().unwrap(),
+                template["spec"].clone(),
+            ))
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_state_machine_round_trips() {
         let (store, root, _source) = with_flags("sys-machine");

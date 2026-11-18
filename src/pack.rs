@@ -43,7 +43,10 @@ pub const PACK_SCHEMA: &str = "meister-pack/1";
 /// `("role_playing", include_str!("../packs/role_playing/pack.json"))`.
 /// PK-01 lands the mechanism only; the first packs are later
 /// commissions (RPG-01, TEACH-01, PK-02).
-const COMPILED: &[(&str, &str)] = &[];
+const COMPILED: &[(&str, &str)] = &[(
+    "educational",
+    include_str!("../packs/educational/pack.json"),
+)];
 
 /// The media-map formats lumen owns (README §"The media map";
 /// AST-05's route map). `voice` is the one asset kind that is
@@ -330,11 +333,11 @@ impl Selection<'_> {
     /// record is an object, every required field is present, every
     /// present field is declared and carries its declared type.
     pub fn validate(&self, kind: &str, record: &Value) -> PackResult<()> {
-        let Some(def) = self
+        let Some((slug, def)) = self
             .packs
             .iter()
-            .flat_map(|p| p.kinds.iter())
-            .find(|d| d.kind == kind)
+            .flat_map(|p| p.kinds.iter().map(move |d| (p.slug.as_str(), d)))
+            .find(|(_, d)| d.kind == kind)
         else {
             return Err(PackError::new(
                 "pack_kind_not_selected",
@@ -369,6 +372,11 @@ impl Selection<'_> {
                 "record_invalid",
                 format!("{kind} declares no field {extra}"),
             ));
+        }
+        // The Educational pack's kinds carry the teaching law
+        // beyond their field tables (TEACH-01).
+        if slug == "educational" {
+            crate::teach::validate(kind, record)?;
         }
         Ok(())
     }
