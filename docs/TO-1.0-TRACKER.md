@@ -46,7 +46,7 @@ its rows as work moves.
 | SYS-11a | progression_dag recommended-prerequisite edges | CLAUDE | TODO | From P0-4 amendment. |
 | SYS-11b | chamber->scene record references checked at compose | CLAUDE | TODO | From P0-4 amendment. |
 | PK-02 | Second-pack smoke: data-only Puzzle pack skeleton against PK-01 schema | ASTRA | TODO | Depends on PK-01. No code changes to the mechanism. |
-| STAGE-01 | STAGE scene record (ruled scene idiom as data) | - | BLOCKED | Owner's R3-S5 verdict outstanding. The rung ships without it if the verdict has not landed. |
+| STAGE-01 | STAGE scene record (ruled scene idiom as data) | CLAUDE | CLAIMED 2026-11-18 | Gate conditions all satisfied 2026-11-18: (1) Owner's S0 verdict on the R3-S6 pack = PASS 2026-11-18 08:28 ("this is way better it does capture the volume") — the R3-S5-verdict gate is satisfied via the R3-S6 cure; (2) R3-S6 tree disposition settled — cure committed `bf36c49` on `local/scene-r3s6-20261117`, shell rung `41e54e4` and boundaries `1198476` committed on top in the same worktree; (3) landing riders (GUI title string, cast-record re-stamp) RULED OUT of STAGE-01's scope by Owner ruling 2026-11-18 (Decision 15) — no title-string work, no re-stamp in this task (the re-stamp was discharged separately by the 2026-11-18 census re-lock, 55/0). Idiom transcribed from the R3-S6 cure as built: one projected vault (one-point perspective, VP room-local (624, -42), s(y) = 1.45*(y+42)/554, figures/doors at s(y)/1.30), one warm light pool at the camp stone (ember tone, stone light capped 0.85x), full-room framing (cam scale 1.00), room luminance 42.8 / 29.5 / 108.9 against the D-1676 reference's 33.1 / 22.0 / 107.6, doors as dark leaves with slate plaques, the standing panel replaced by the on-demand Guide pop-up (D-1672). Known misses enter as embeddedness check rows flagged below-bar: S16 architecture:figure ratio ~1.09-1.15, S17 no foreground occluder plane, S18 Guide plate parchment/sans (not dark bracketed serif). Branch `pax/rung5-stage01-20261118`. |
 | NIF-02 | Worked example: one Niflheim floor end to end through Meister | PAX + CLAUDE | TODO | Owner gates the floor's verdict pack. |
 | GATE-5 | Rung 5 gate (NIF-02, PK-01 invariant, PK-02, EFLO re-measure) | PAX | TODO | EFLO re-measure run by LOCAL as a gated batch. |
 
@@ -104,6 +104,6 @@ its rows as work moves.
 
 ## Owner gates on the critical path
 
-- R3-S5 verdict (unblocks STAGE-01 only; nothing else waits).
+- R3-S5 verdict — LANDED via the R3-S6 cure: Owner S0 PASS 2026-11-18 08:28; STAGE-01 unblocked and claimed (see its row).
 - NIF-02 floor verdict (GATE-5).
 - GATE-8 store-side acts; V1-01 title gate (GATE-9).
