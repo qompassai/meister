@@ -1332,6 +1332,21 @@ impl Store {
             .filter(|v| v.is_object())
             .ok_or_else(|| StoreError::invalid_record("graph must be an object"))?;
         scene_graph_shape(graph)?;
+        // STAGE-01: an optional stage block carries the ruled
+        // STAGE scene idiom (part tables, camera rig, room
+        // composition). Define checks its shape only; the idiom
+        // verdict is `meister_scene_validate`'s job, exactly as
+        // the graph's structural verdict is.
+        let stage = match args.get("stage") {
+            None => None,
+            Some(value) => {
+                if !value.is_object() {
+                    return Err(StoreError::invalid_record("stage must be an object"));
+                }
+                stage_shape(value)?;
+                Some(value.clone())
+            }
+        };
         let file = self.scene_file(&project_id, &scene_id);
         self.refuse_if_frozen_file(&project_id, &file)?;
         if file.exists() {
@@ -1344,7 +1359,7 @@ impl Store {
             .get("envelope")
             .cloned()
             .ok_or_else(|| StoreError::invalid("envelope is required"))?;
-        let record = json!({
+        let mut record = json!({
             "record_type": "meister_scene",
             "schema_version": 1,
             "project_id": project_id,
@@ -1353,6 +1368,9 @@ impl Store {
             "envelope": envelope,
             "graph": graph,
         });
+        if let Some(stage) = stage {
+            record["stage"] = stage;
+        }
         let body = json!({
             "project_id": project_id,
             "scene_id": scene_id,
@@ -1368,7 +1386,12 @@ impl Store {
     /// `meister_scene_validate` (SYS-08): the structural verdict
     /// over a stored scene — SYS-01 checks plus orphan checks,
     /// returned as `{valid, refusals[]}` with one typed code per
-    /// refusal. A read: it writes nothing.
+    /// refusal. A read: it writes nothing. STAGE-01: when the
+    /// record carries a stage block, the embeddedness verdict
+    /// joins it — refusal-severity codes merge into `refusals`
+    /// (so `valid` falls), and every stage finding, refusals and
+    /// below-bar rows alike, is reported in `stage_findings`
+    /// with its row, severity, and measured values.
     pub fn validate_scene(&self, args: &Value) -> StoreResult<Value> {
         let project_id = arg_id(args, "project_id")?;
         let scene_id = arg_id(args, "scene_id")?;
@@ -1380,12 +1403,20 @@ impl Store {
                 format!("scene {scene_id} not found in {project_id}"),
             )
         })?;
-        let refusals = scene_refusals(&record["graph"]);
-        Ok(json!({
+        let mut refusals = scene_refusals(&record["graph"]);
+        let stage = record.get("stage").map(|s| stage_verdict(s, &scene_id));
+        if let Some(stage) = &stage {
+            refusals.extend(stage.refusal_codes.iter().cloned());
+        }
+        let mut verdict = json!({
             "scene_id": scene_id,
             "valid": refusals.is_empty(),
             "refusals": refusals,
-        }))
+        });
+        if let Some(stage) = stage {
+            verdict["stage_findings"] = json!(stage.findings);
+        }
+        Ok(verdict)
     }
 
     /// `meister_level_compose` (SYS-09), structural half: author
@@ -4840,6 +4871,792 @@ fn scene_refusals(graph: &Value) -> Vec<String> {
     refusals
 }
 
+// ----------------------------------------------------------------
+// STAGE-01 — the STAGE scene idiom as executable law.
+//
+// The idiom, as ruled (D-1658, Owner, 2026-11-16): a continuous
+// inhabited place in layered depth planes — dark sky/canopy, a
+// silhouette plane, mid-ground, a ground band the character
+// stands WITHIN, a foreground lip overlapping the bottom of
+// the frame; the character valued into the scene's own
+// darkness, not pasted before a backdrop. Niflheim's Descent
+// transposes the far planes into the room: the vault's back
+// wall carries the far role, and the rest carry over by name.
+//
+// `stage_shape` is the define-time half (bounded tables, typed
+// fields — a scene may be authored before it is sound, exactly
+// as a graph may). `stage_verdict` is the validate-time half:
+// every check is a transcription of a convicted or cured form
+// from the Niflheim scene rounds (the R3-S5 diagnosis,
+// convictions C1–C7, and the R3-S6 cure the Owner passed at
+// S0 on 2026-11-18), never an invented rule:
+//
+//   C1  the floor read as a second wall (elevation geometry)
+//       → the rig's projection is the ruled one-point.
+//   C2  no enclosure; the frame cropped the room (rig scale
+//       1080 milli cut the doors at the frame edge)
+//       → framing is the full room at rest scale 1000.
+//   C3  contradictory scale laws (R3-S5's figure stood at
+//       1.41x its door's height)
+//       → no figure part reaches a door part's height.
+//   C4  doors made of UI parchment (lit to the panel's own
+//       value) → a door's leaf/plaque is never the UI
+//       parchment; doors are architecture (D-1659).
+//   C5  figures not valued into the dark; no light source
+//       → at least one declared light source, anchored to a
+//       declared part, its stone cap at or below the room key
+//       (the S4 fix capped the camp stone at 850 milli; above
+//       1000 the pool outshines the room, the S4 halo).
+//   C6  the centre glued to the wall line → the light anchor's
+//       depth is never the wall foot (the cure: mid-floor).
+//   C7  a standing panel is a second picture of the room
+//       (D-1672) → the only panel form is the Guide pop-up.
+//
+// Below-bar rows (findings, never refusals — the measured
+// values are the cured record's own, transcribed from the
+// R3-S6 pack; a record repeating them surfaces the named
+// finding instead of passing silently):
+//
+//   S15 light: the cure runs ONE warm source in one grade
+//       (bar: several warm sources in one grade). A mixed
+//       grade flags on the same row, as does a document-
+//       bright room: mean luminance bar 100000 milli — the
+//       D-1676 reference sits at 33100, R3-S5's convicted
+//       floor at 158200, the cure at 42800.
+//   S16 architecture-to-figure scale: the cure's smallest
+//       door stands 270 units against the tallest figure's
+//       248 (ratio 1088 milli, the pack's ≈1.09x). Bar 1500
+//       (proposed): the
+//       reference's architecture dwarfs its figures
+//       (figures ≈0.35–0.40 of frame height), floored
+//       conservatively at 1.5x.
+//   S17 foreground plane: D-1658 names a foreground lip; the
+//       cured room has none yet, so its absence flags until
+//       a record carries the plane.
+//   S18 Guide plate: the bar is a dark plate with bracketed
+//       serif rows; the cure still renders parchment/sans.
+//
+// Rows that are eye-judgements (A15) stay verdict-pack items,
+// not validators: nothing here scores aliveness or beauty.
+// All fractions are integer milli-units (x1000), the estate's
+// record convention — no floats in records.
+
+const MAX_STAGE_TABLES: usize = 16;
+const MAX_STAGE_PARTS_PER_TABLE: usize = 64;
+const MAX_STAGE_PLACEMENTS: usize = 256;
+const MAX_STAGE_LIGHT_SOURCES: i64 = 64;
+const MAX_STAGE_HEIGHT_UNITS: i64 = 100_000;
+const MAX_STAGE_COORD: i64 = 1_000_000;
+const MAX_STAGE_REF_CHARS: usize = 160;
+const MAX_LUMINANCE_MILLI: i64 = 255_000;
+/// Depth planes far to near: D-1658's layered planes, with
+/// the Descent's back wall transposed in at the far role.
+const STAGE_PLANES: [&str; 6] = [
+    "canopy",
+    "silhouette",
+    "back-wall",
+    "mid-ground",
+    "ground-band",
+    "foreground-lip",
+];
+/// Planes that satisfy D-1658's far role.
+const STAGE_FAR_PLANES: [&str; 3] = ["canopy", "silhouette", "back-wall"];
+/// The cured rig's at-rest scale: the whole room in frame (C2).
+const STAGE_CAMERA_SCALE_MILLI: i64 = 1_000;
+/// The light-cap ceiling (C5): at 1000 milli a pool matches
+/// the room key; the cure runs its camp stone at 850.
+const STAGE_LIGHT_CAP_MAX_MILLI: i64 = 1_000;
+/// S16's proposed bar, milli: architecture stands at least
+/// 1.5x the tallest figure (see the transcription note).
+const STAGE_RATIO_BAR_MILLI: i64 = 1_500;
+/// S15's proposed bar, milli: a room whose mean luminance
+/// passes 100.0 is document-bright, nearer R3-S5's convicted
+/// 158.2 than the reference's 33.1.
+const STAGE_GRADE_MEAN_BAR_MILLI: i64 = 100_000;
+
+/// The validate-time STAGE verdict: refusal codes (merged
+/// into the scene verdict's refusals by the caller) plus the
+/// full findings array — refusals and below-bar rows alike,
+/// each carrying its row id and, for measured rows, the
+/// record's value against the bar, both in milli-units.
+struct StageVerdict {
+    refusal_codes: Vec<String>,
+    findings: Vec<Value>,
+}
+
+impl StageVerdict {
+    fn new() -> StageVerdict {
+        StageVerdict {
+            refusal_codes: Vec::new(),
+            findings: Vec::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        row: &str,
+        code: &str,
+        severity: &str,
+        detail: String,
+        measured: Option<(i64, i64)>,
+    ) {
+        if severity == "refusal" {
+            self.refusal_codes.push(code.to_string());
+        }
+        let mut finding = json!({
+            "row": row,
+            "code": code,
+            "severity": severity,
+            "detail": detail,
+        });
+        if let Some((measured_milli, bar_milli)) = measured {
+            finding["measured_milli"] = json!(measured_milli);
+            finding["bar_milli"] = json!(bar_milli);
+        }
+        self.findings.push(finding);
+    }
+
+    fn refuse(&mut self, row: &str, code: &str, detail: String) {
+        self.record(row, code, "refusal", detail, None);
+    }
+
+    fn flag(&mut self, row: &str, code: &str, detail: String) {
+        self.record(row, code, "below_bar", detail, None);
+    }
+
+    fn flag_measured(
+        &mut self,
+        row: &str,
+        code: &str,
+        detail: String,
+        measured_milli: i64,
+        bar_milli: i64,
+    ) {
+        self.record(
+            row,
+            code,
+            "below_bar",
+            detail,
+            Some((measured_milli, bar_milli)),
+        );
+    }
+}
+
+/// A string field on a stage sub-object, read defensively.
+fn stage_str<'a>(obj: &'a Value, field: &str) -> Option<&'a str> {
+    obj.get(field).and_then(Value::as_str)
+}
+
+/// An integer field on a stage sub-object, read defensively.
+fn stage_num(obj: &Value, field: &str) -> Option<i64> {
+    obj.get(field).and_then(Value::as_i64)
+}
+
+/// A required bounded integer field on a stage sub-object
+/// (define-time shape).
+fn stage_i64_field(obj: &Value, field: &str, min: i64, max: i64) -> StoreResult<i64> {
+    let value = obj.get(field).and_then(Value::as_i64).ok_or_else(|| {
+        StoreError::invalid_record(format!("stage field {field} must be an integer"))
+    })?;
+    if !(min..=max).contains(&value) {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!("stage field {field} is {value}; the bound is {min}..={max}"),
+        ));
+    }
+    Ok(value)
+}
+
+/// The define-time half of STAGE-01: shape only — bounded
+/// part tables, a typed rig and composition, the plane
+/// vocabulary. Whether the declared values ARE the idiom is
+/// `stage_verdict`'s question, never define's.
+fn stage_shape(stage: &Value) -> StoreResult<()> {
+    let tables = stage
+        .get("part_tables")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::invalid_record("stage part_tables must be an array"))?;
+    if tables.len() > MAX_STAGE_TABLES {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!(
+                "stage part_tables has {} entries; the bound is {MAX_STAGE_TABLES}",
+                tables.len()
+            ),
+        ));
+    }
+    let mut table_ids = BTreeSet::new();
+    for table in tables {
+        stage_table_shape(table, &mut table_ids)?;
+    }
+    let rig = stage
+        .get("camera_rig")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| StoreError::invalid_record("stage camera_rig must be an object"))?;
+    req_text(rig, "projection", MAX_ID_CHARS)?;
+    req_text(rig, "framing", MAX_ID_CHARS)?;
+    stage_i64_field(rig, "scale_milli", 1, MAX_STAGE_HEIGHT_UNITS)?;
+    let vp = rig
+        .get("vanishing_point")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::invalid_record("camera_rig vanishing_point must be [x, y]"))?;
+    let vp_bounded = vp.len() == 2
+        && vp.iter().all(|c| {
+            c.as_i64()
+                .is_some_and(|n| (-MAX_STAGE_COORD..=MAX_STAGE_COORD).contains(&n))
+        });
+    if !vp_bounded {
+        return Err(StoreError::invalid_record(
+            "camera_rig vanishing_point must be two bounded integers",
+        ));
+    }
+    let composition = stage
+        .get("composition")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| StoreError::invalid_record("stage composition must be an object"))?;
+    stage_composition_shape(composition)
+}
+
+/// One part table's define-time shape: a named table of
+/// named, kinded parts; heights, when declared, are bounded
+/// positive integers (the scale law reads them at verdict).
+fn stage_table_shape(table: &Value, table_ids: &mut BTreeSet<String>) -> StoreResult<()> {
+    let table_id = req_text(table, "table_id", MAX_ID_CHARS)?;
+    valid_id(&table_id)?;
+    if !table_ids.insert(table_id.clone()) {
+        return Err(StoreError::invalid_record(format!(
+            "duplicate stage part table {table_id}"
+        )));
+    }
+    let parts = table
+        .get("parts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::invalid_record("stage table parts must be an array"))?;
+    if parts.len() > MAX_STAGE_PARTS_PER_TABLE {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!(
+                "stage table {table_id} has {} parts; the bound is {MAX_STAGE_PARTS_PER_TABLE}",
+                parts.len()
+            ),
+        ));
+    }
+    let mut part_ids = BTreeSet::new();
+    for part in parts {
+        let part_id = req_text(part, "part_id", MAX_ID_CHARS)?;
+        valid_id(&part_id)?;
+        req_text(part, "kind", MAX_ID_CHARS)?;
+        if !part_ids.insert(part_id.clone()) {
+            return Err(StoreError::invalid_record(format!(
+                "duplicate stage part {part_id} in table {table_id}"
+            )));
+        }
+        if part.get("height_units").is_some() {
+            stage_i64_field(part, "height_units", 1, MAX_STAGE_HEIGHT_UNITS)?;
+        }
+    }
+    Ok(())
+}
+
+/// The composition's define-time shape: the ruled plane
+/// vocabulary without duplicates, the typed grounding /
+/// panel / plate / light / luminance fields, and bounded
+/// placements citing parts by `table:part` reference.
+fn stage_composition_shape(composition: &Value) -> StoreResult<()> {
+    let planes = composition
+        .get("depth_planes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::invalid_record("composition depth_planes must be an array"))?;
+    if planes.len() > STAGE_PLANES.len() {
+        return Err(StoreError::new(
+            "bound_exceeded",
+            format!(
+                "composition depth_planes has {} entries; the bound is {}",
+                planes.len(),
+                STAGE_PLANES.len()
+            ),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for plane in planes {
+        let plane = plane.as_str().ok_or_else(|| {
+            StoreError::invalid_record("composition depth planes must be strings")
+        })?;
+        if !STAGE_PLANES.contains(&plane) {
+            return Err(StoreError::invalid_record(format!(
+                "composition depth plane {plane} is not in the ruled plane vocabulary"
+            )));
+        }
+        if !seen.insert(plane) {
+            return Err(StoreError::invalid_record(format!(
+                "duplicate composition depth plane {plane}"
+            )));
+        }
+    }
+    req_text(composition, "figure_grounding", MAX_ID_CHARS)?;
+    req_text(composition, "panel_form", MAX_ID_CHARS)?;
+    let plate = composition
+        .get("guide_plate")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| StoreError::invalid_record("composition guide_plate must be an object"))?;
+    req_text(plate, "surface", MAX_ID_CHARS)?;
+    req_text(plate, "typeface", MAX_ID_CHARS)?;
+    let light = composition
+        .get("light")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| StoreError::invalid_record("composition light must be an object"))?;
+    stage_i64_field(light, "sources", 0, MAX_STAGE_LIGHT_SOURCES)?;
+    req_text(light, "grade", MAX_ID_CHARS)?;
+    req_text(light, "anchor_ref", MAX_STAGE_REF_CHARS)?;
+    req_text(light, "anchor_depth", MAX_ID_CHARS)?;
+    if light.get("stone_cap_milli").is_some() {
+        stage_i64_field(light, "stone_cap_milli", 0, MAX_STAGE_HEIGHT_UNITS)?;
+    }
+    let luminance = composition
+        .get("luminance_milli")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| {
+            StoreError::invalid_record("composition luminance_milli must be an object")
+        })?;
+    for field in ["mean", "median", "p95"] {
+        stage_i64_field(luminance, field, 0, MAX_LUMINANCE_MILLI)?;
+    }
+    if let Some(placements) = composition.get("placements") {
+        let placements = placements
+            .as_array()
+            .ok_or_else(|| StoreError::invalid_record("composition placements must be an array"))?;
+        if placements.len() > MAX_STAGE_PLACEMENTS {
+            return Err(StoreError::new(
+                "bound_exceeded",
+                format!(
+                    "composition placements has {} entries; the bound is {MAX_STAGE_PLACEMENTS}",
+                    placements.len()
+                ),
+            ));
+        }
+        for placement in placements {
+            req_text(placement, "part_ref", MAX_STAGE_REF_CHARS)?;
+            req_text(placement, "plane", MAX_ID_CHARS)?;
+            req_text(placement, "depth_band", MAX_ID_CHARS)?;
+        }
+    }
+    Ok(())
+}
+
+/// The validate-time half of STAGE-01: the embeddedness
+/// verdict over a stored stage block (see the transcription
+/// note above). Defensive by construction — a record written
+/// behind the server's back with a malformed block earns one
+/// `invalid_record` refusal, never a panic.
+fn stage_verdict(stage: &Value, scene_id: &str) -> StageVerdict {
+    let mut verdict = StageVerdict::new();
+    let Some(rig) = stage.get("camera_rig").filter(|v| v.is_object()) else {
+        verdict.refuse(
+            "SHAPE",
+            "invalid_record",
+            format!("scene {scene_id} stage block carries no camera_rig object"),
+        );
+        return verdict;
+    };
+    let Some(composition) = stage.get("composition").filter(|v| v.is_object()) else {
+        verdict.refuse(
+            "SHAPE",
+            "invalid_record",
+            format!("scene {scene_id} stage block carries no composition object"),
+        );
+        return verdict;
+    };
+    let parts = stage_part_index(stage);
+    stage_architecture_rows(&mut verdict, scene_id, &parts);
+    stage_rig_rows(&mut verdict, rig);
+    stage_composition_rows(&mut verdict, scene_id, composition, &parts);
+    verdict
+}
+
+/// Every declared part, keyed by its `table:part` reference —
+/// the namespace placements and the light anchor cite.
+fn stage_part_index(stage: &Value) -> BTreeMap<String, &Value> {
+    let mut index = BTreeMap::new();
+    if let Some(tables) = stage.get("part_tables").and_then(Value::as_array) {
+        for table in tables {
+            let (Some(table_id), Some(parts)) = (
+                stage_str(table, "table_id"),
+                table.get("parts").and_then(Value::as_array),
+            ) else {
+                continue;
+            };
+            for part in parts {
+                if let Some(part_id) = stage_str(part, "part_id") {
+                    index.insert(format!("{table_id}:{part_id}"), part);
+                }
+            }
+        }
+    }
+    index
+}
+
+/// The architecture rows: part completeness, the door
+/// material conviction (C4), the scale law (C3), and the
+/// architecture-to-figure ratio against its bar (S16).
+fn stage_architecture_rows(
+    verdict: &mut StageVerdict,
+    scene_id: &str,
+    parts: &BTreeMap<String, &Value>,
+) {
+    let mut door_heights: Vec<i64> = Vec::new();
+    let mut figure_heights: Vec<i64> = Vec::new();
+    for (part_ref, part) in parts {
+        match stage_str(part, "kind") {
+            Some("door") => {
+                if let Some(height) = stage_num(part, "height_units").filter(|h| *h > 0) {
+                    door_heights.push(height);
+                }
+                // C4: a door's leaf or plaque is never the
+                // UI's parchment — doors are architecture
+                // (D-1659), not the Guide's furniture.
+                for field in ["leaf", "plaque"] {
+                    if stage_str(part, field) == Some("parchment") {
+                        verdict.refuse(
+                            "C4",
+                            "stage_door_ui_material",
+                            format!(
+                                "scene {scene_id} door {part_ref} declares {field} \
+                                 parchment — the UI material, not architecture"
+                            ),
+                        );
+                    }
+                }
+            }
+            Some("figure") => {
+                if let Some(height) = stage_num(part, "height_units").filter(|h| *h > 0) {
+                    figure_heights.push(height);
+                }
+            }
+            _ => {}
+        }
+    }
+    if door_heights.is_empty() || figure_heights.is_empty() {
+        verdict.refuse(
+            "PARTS",
+            "stage_parts_incomplete",
+            format!(
+                "scene {scene_id} stage declares {} door heights and {} figure \
+                 heights; the idiom's scale law needs both",
+                door_heights.len(),
+                figure_heights.len()
+            ),
+        );
+        return;
+    }
+    let min_door = door_heights.iter().min().copied().unwrap_or(0);
+    let max_figure = figure_heights.iter().max().copied().unwrap_or(0);
+    // C3: one scale law — R3-S5 ran two and its figure stood
+    // at 1.41x the door it walked through.
+    if max_figure >= min_door {
+        verdict.refuse(
+            "C3",
+            "stage_scale_contradiction",
+            format!(
+                "scene {scene_id} tallest figure stands {max_figure} units \
+                 against the smallest door's {min_door} — figures stay below \
+                 the architecture they move through"
+            ),
+        );
+    }
+    // S16: the cured room's own ratio, against the bar.
+    let ratio_milli = min_door.saturating_mul(1_000) / max_figure;
+    if ratio_milli < STAGE_RATIO_BAR_MILLI {
+        verdict.flag_measured(
+            "S16",
+            "stage_ratio_below_bar",
+            format!(
+                "scene {scene_id} smallest door stands {min_door} units \
+                 against the tallest figure's {max_figure}"
+            ),
+            ratio_milli,
+            STAGE_RATIO_BAR_MILLI,
+        );
+    }
+}
+
+/// The rig rows: the ruled projection (C1) and the
+/// full-room frame at rest scale (C2).
+fn stage_rig_rows(verdict: &mut StageVerdict, rig: &Value) {
+    // C1: the convicted geometry was the elevation — the
+    // floor read as a second wall. The ruled rig is
+    // one-point perspective.
+    if stage_str(rig, "projection") != Some("one-point") {
+        verdict.refuse(
+            "C1",
+            "stage_projection_not_ruled",
+            format!(
+                "camera rig projection is {}; the ruled projection is one-point",
+                stage_str(rig, "projection").unwrap_or("<missing>")
+            ),
+        );
+    }
+    // C2: R3-S5's rig cropped the room — scale 1080 milli
+    // cut the doors at the frame edge. The cure frames the
+    // whole room at rest scale.
+    let scale = stage_num(rig, "scale_milli");
+    if stage_str(rig, "framing") != Some("full-room") || scale != Some(STAGE_CAMERA_SCALE_MILLI) {
+        verdict.refuse(
+            "C2",
+            "stage_camera_crops_room",
+            format!(
+                "camera rig frames {} at scale {} milli; the ruled rig frames \
+                 the full room at {STAGE_CAMERA_SCALE_MILLI}",
+                stage_str(rig, "framing").unwrap_or("<missing>"),
+                scale.map_or_else(|| "<missing>".to_string(), |n| n.to_string())
+            ),
+        );
+    }
+}
+
+/// The composition rows: the layered planes and the
+/// figure's grounding (D-1658), the removed standing panel
+/// (C7), reference integrity, the light rows (C5, C6, S15),
+/// and the foreground-lip and Guide-plate bars (S17, S18).
+fn stage_composition_rows(
+    verdict: &mut StageVerdict,
+    scene_id: &str,
+    composition: &Value,
+    parts: &BTreeMap<String, &Value>,
+) {
+    let planes: Vec<&str> = composition
+        .get("depth_planes")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    stage_plane_rows(verdict, scene_id, &planes);
+    // D-1658's core clause: the figure stands WITHIN the
+    // ground band, never pasted before a backdrop.
+    if stage_str(composition, "figure_grounding") != Some("within-ground-band") {
+        verdict.refuse(
+            "D-1658",
+            "stage_figure_not_grounded",
+            format!(
+                "scene {scene_id} grounds its figures {}; the ruling is \
+                 within-ground-band — the character stands within the place",
+                stage_str(composition, "figure_grounding").unwrap_or("<missing>")
+            ),
+        );
+    }
+    // C7 / D-1672: the standing panel is removed; the Guide
+    // is a pop-up the player summons.
+    if stage_str(composition, "panel_form") != Some("guide-popup") {
+        verdict.refuse(
+            "C7",
+            "stage_panel_form_removed",
+            format!(
+                "scene {scene_id} panel form is {}; the standing panel is \
+                 removed (D-1672) — the Guide is a pop-up",
+                stage_str(composition, "panel_form").unwrap_or("<missing>")
+            ),
+        );
+    }
+    stage_ref_rows(verdict, scene_id, composition, parts, &planes);
+    stage_light_rows(verdict, scene_id, composition);
+    // S17: D-1658 names a foreground lip overlapping the
+    // frame's bottom; the cured room has none yet.
+    if !planes.contains(&"foreground-lip") {
+        verdict.flag(
+            "S17",
+            "stage_foreground_plane_missing",
+            format!(
+                "scene {scene_id} declares no foreground-lip plane; D-1658's \
+                 layered place ends in a foreground lip over the frame"
+            ),
+        );
+    }
+    // S18: the Guide's plate meets the room's own standard —
+    // dark, bracketed, serif — not the UI parchment.
+    let plate = composition.get("guide_plate");
+    let surface = plate.and_then(|p| stage_str(p, "surface"));
+    let typeface = plate.and_then(|p| stage_str(p, "typeface"));
+    if surface != Some("dark") || typeface != Some("serif-bracketed") {
+        verdict.flag(
+            "S18",
+            "stage_guide_plate_below_bar",
+            format!(
+                "scene {scene_id} guide plate is {}/{}; the bar is a dark \
+                 plate with bracketed serif rows",
+                surface.unwrap_or("<missing>"),
+                typeface.unwrap_or("<missing>")
+            ),
+        );
+    }
+}
+
+/// D-1658's layered planes as a completeness row: a far
+/// plane, a mid-ground, and the ground band, declared in
+/// far-to-near order.
+fn stage_plane_rows(verdict: &mut StageVerdict, scene_id: &str, planes: &[&str]) {
+    let has_far = planes.iter().any(|p| STAGE_FAR_PLANES.contains(p));
+    let ordered = planes.windows(2).all(|pair| {
+        let a = STAGE_PLANES.iter().position(|p| p == &pair[0]);
+        let b = STAGE_PLANES.iter().position(|p| p == &pair[1]);
+        matches!((a, b), (Some(a), Some(b)) if a < b)
+    });
+    if !has_far || !planes.contains(&"mid-ground") || !planes.contains(&"ground-band") || !ordered {
+        verdict.refuse(
+            "D-1658",
+            "stage_planes_incomplete",
+            format!(
+                "scene {scene_id} depth planes [{}] do not layer a far plane, \
+                 mid-ground, and the ground band in far-to-near order",
+                planes.join(", ")
+            ),
+        );
+    }
+}
+
+/// Reference integrity: every part the composition cites —
+/// placements and the light anchor — resolves to a declared
+/// part, and every placement's plane is a declared plane. A
+/// dangling citation names the scene and the reference.
+fn stage_ref_rows(
+    verdict: &mut StageVerdict,
+    scene_id: &str,
+    composition: &Value,
+    parts: &BTreeMap<String, &Value>,
+    planes: &[&str],
+) {
+    let mut cited: Vec<&str> = Vec::new();
+    if let Some(light) = composition.get("light")
+        && let Some(anchor) = stage_str(light, "anchor_ref")
+    {
+        cited.push(anchor);
+    }
+    if let Some(placements) = composition.get("placements").and_then(Value::as_array) {
+        for placement in placements {
+            if let Some(part_ref) = stage_str(placement, "part_ref") {
+                cited.push(part_ref);
+                if let Some(plane) = stage_str(placement, "plane")
+                    && !planes.contains(&plane)
+                {
+                    verdict.refuse(
+                        "REF",
+                        "stage_dangling_ref",
+                        format!(
+                            "scene {scene_id} placement of {part_ref} names \
+                                 depth plane {plane}, which the composition \
+                                 does not declare"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    for part_ref in cited {
+        if !parts.contains_key(part_ref) {
+            verdict.refuse(
+                "REF",
+                "stage_dangling_ref",
+                format!(
+                    "scene {scene_id} cites part {part_ref}, which no part \
+                     table declares"
+                ),
+            );
+        }
+    }
+}
+
+/// The light rows: a declared source (C5), the centre off
+/// the wall line (C6), the stone cap under the room key
+/// (C5), and the one-grade bars (S15).
+fn stage_light_rows(verdict: &mut StageVerdict, scene_id: &str, composition: &Value) {
+    let Some(light) = composition.get("light").filter(|v| v.is_object()) else {
+        verdict.refuse(
+            "C5",
+            "stage_no_light_source",
+            format!(
+                "scene {scene_id} composition declares no light block — no \
+                 light source at all"
+            ),
+        );
+        return;
+    };
+    let sources = stage_num(light, "sources").unwrap_or(0);
+    // C5: R3-S5's room had no light source; its figures were
+    // not valued into any darkness.
+    if sources <= 0 {
+        verdict.refuse(
+            "C5",
+            "stage_no_light_source",
+            format!(
+                "scene {scene_id} declares {sources} light sources; the room \
+                 must carry at least one"
+            ),
+        );
+    }
+    // C6: the camp centre glued to the wall line read as
+    // furniture against a backdrop; the cure anchors it at
+    // core depth, mid-floor.
+    if stage_str(light, "anchor_depth") == Some("wall-foot") {
+        verdict.refuse(
+            "C6",
+            "stage_centre_on_wall_line",
+            format!(
+                "scene {scene_id} light anchor sits at the wall foot; the \
+                 centre belongs at core depth, mid-floor"
+            ),
+        );
+    }
+    if let Some(cap) = stage_num(light, "stone_cap_milli")
+        && cap > STAGE_LIGHT_CAP_MAX_MILLI
+    {
+        verdict.refuse(
+            "C5",
+            "stage_light_overbright",
+            format!(
+                "scene {scene_id} stone light cap is {cap} milli, above \
+                     the room key at {STAGE_LIGHT_CAP_MAX_MILLI} — the pool \
+                     would outshine the room (the S4 halo)"
+            ),
+        );
+    }
+    // S15: one warm source in one grade is the cured floor,
+    // not the bar — the reference carries several sources.
+    if sources == 1 {
+        verdict.flag(
+            "S15",
+            "stage_single_light_source",
+            format!(
+                "scene {scene_id} runs a single light source; the bar is \
+                 several warm sources in one grade"
+            ),
+        );
+    }
+    if stage_str(light, "grade") != Some("one-warm-grade") {
+        verdict.flag(
+            "S15",
+            "stage_grade_not_unified",
+            format!(
+                "scene {scene_id} light grade is {}; the bar is one warm \
+                 grade across every source",
+                stage_str(light, "grade").unwrap_or("<missing>")
+            ),
+        );
+    }
+    if let Some(mean) = composition
+        .get("luminance_milli")
+        .and_then(|l| stage_num(l, "mean"))
+        && mean > STAGE_GRADE_MEAN_BAR_MILLI
+    {
+        verdict.flag_measured(
+            "S15",
+            "stage_grade_high_key",
+            format!(
+                "scene {scene_id} room mean luminance is document-bright \
+                     against the reference dark"
+            ),
+            mean,
+            STAGE_GRADE_MEAN_BAR_MILLI,
+        );
+    }
+}
+
 const MAX_FLOORS: usize = 64;
 const MAX_CHAMBERS_PER_FLOOR: usize = 64;
 const MAX_DOORS_PER_FLOOR: usize = 128;
@@ -6573,6 +7390,382 @@ mod tests {
                 .any(|r| r == "bound_exceeded"),
             "verdict: {verdict}"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------------------------------------------------------
+    // STAGE-01 — the STAGE scene idiom: the cured hub record
+    // validates with its below-bar rows named; the convicted
+    // forms are refused with both records named.
+
+    /// The cured hub room (the R3-S6 record the Owner passed
+    /// at S0), transcribed as a stage block: a one-point rig
+    /// at VP (624, -42), full-room framing at scale 1000,
+    /// doors of 270/282 units against figures of 234/248, the
+    /// camp stone anchored mid-floor with its light capped
+    /// at 850 milli, room luminance 42800/29500/108900 milli
+    /// — and the below-bar rows the cure still carries: no
+    /// foreground lip, a parchment/sans Guide plate, a single
+    /// light source, doors at 1088 milli of the tallest
+    /// figure against the 1500 bar.
+    fn hub_stage() -> Value {
+        json!({
+            "part_tables": [
+                {"table_id": "set", "parts": [
+                    {"part_id": "back-wall", "kind": "wall"},
+                    {"part_id": "floor", "kind": "ground"},
+                    {"part_id": "camp-stone", "kind": "light-anchor"}
+                ]},
+                {"table_id": "doors", "parts": [
+                    {"part_id": "chamber-door", "kind": "door",
+                     "height_units": 270, "leaf": "iron-dark",
+                     "plaque": "slate"},
+                    {"part_id": "side-door", "kind": "door",
+                     "height_units": 282, "leaf": "iron-dark",
+                     "plaque": "slate"}
+                ]},
+                {"table_id": "figures", "parts": [
+                    {"part_id": "delver", "kind": "figure", "height_units": 234},
+                    {"part_id": "keeper", "kind": "figure", "height_units": 248}
+                ]}
+            ],
+            "camera_rig": {
+                "projection": "one-point",
+                "vanishing_point": [624, -42],
+                "framing": "full-room",
+                "scale_milli": 1000
+            },
+            "composition": {
+                "depth_planes": ["back-wall", "mid-ground", "ground-band"],
+                "figure_grounding": "within-ground-band",
+                "panel_form": "guide-popup",
+                "guide_plate": {"surface": "parchment", "typeface": "sans"},
+                "light": {
+                    "sources": 1,
+                    "grade": "one-warm-grade",
+                    "anchor_ref": "set:camp-stone",
+                    "anchor_depth": "mid-floor",
+                    "stone_cap_milli": 850
+                },
+                "luminance_milli": {"mean": 42800, "median": 29500, "p95": 108900},
+                "placements": [
+                    {"part_ref": "set:camp-stone", "plane": "ground-band",
+                     "depth_band": "mid-floor"},
+                    {"part_ref": "doors:chamber-door", "plane": "back-wall",
+                     "depth_band": "back"},
+                    {"part_ref": "figures:delver", "plane": "ground-band",
+                     "depth_band": "mid-floor"},
+                    {"part_ref": "figures:keeper", "plane": "ground-band",
+                     "depth_band": "mid-floor"}
+                ]
+            }
+        })
+    }
+
+    fn stage_scene(store: &Store, stage: Value) -> Value {
+        let mut args = scene_args("hub", three_node_graph());
+        args["stage"] = stage;
+        store.define_scene(&args).expect("define");
+        store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "hub"}))
+            .expect("validate")
+    }
+
+    fn finding_codes(verdict: &Value) -> Vec<&str> {
+        verdict["stage_findings"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(|r| r["code"].as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    fn refusal_codes(verdict: &Value) -> Vec<&str> {
+        verdict["refusals"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_hub_shaped_stage_scene_validates_with_its_below_bar_rows_named() {
+        let (store, root, _source) = scaffolded("stage-hub");
+        let verdict = stage_scene(&store, hub_stage());
+        assert_eq!(verdict["valid"], json!(true));
+        assert!(refusal_codes(&verdict).is_empty());
+        let mut codes = finding_codes(&verdict);
+        codes.sort_unstable();
+        assert_eq!(
+            codes,
+            [
+                "stage_foreground_plane_missing",
+                "stage_guide_plate_below_bar",
+                "stage_ratio_below_bar",
+                "stage_single_light_source",
+            ]
+        );
+        let findings = verdict["stage_findings"].as_array().expect("findings");
+        assert!(findings.iter().all(|f| f["severity"] == json!("below_bar")));
+        let ratio = findings
+            .iter()
+            .find(|f| f["code"] == json!("stage_ratio_below_bar"))
+            .expect("the S16 finding");
+        assert_eq!(ratio["row"], json!("S16"));
+        assert_eq!(ratio["measured_milli"], json!(1088));
+        assert_eq!(ratio["bar_milli"], json!(1500));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_stage_scene_meeting_every_bar_has_no_findings() {
+        let (store, root, _source) = scaffolded("stage-bar");
+        let mut stage = hub_stage();
+        stage["part_tables"][1]["parts"][0]["height_units"] = json!(400);
+        stage["part_tables"][1]["parts"][1]["height_units"] = json!(420);
+        stage["composition"]["depth_planes"] =
+            json!(["back-wall", "mid-ground", "ground-band", "foreground-lip"]);
+        stage["composition"]["guide_plate"] =
+            json!({"surface": "dark", "typeface": "serif-bracketed"});
+        stage["composition"]["light"]["sources"] = json!(3);
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(true));
+        assert_eq!(verdict["stage_findings"], json!([]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_canopy_far_plane_satisfies_the_layered_place() {
+        let (store, root, _source) = scaffolded("stage-canopy");
+        let mut stage = hub_stage();
+        stage["composition"]["depth_planes"] = json!([
+            "canopy",
+            "silhouette",
+            "mid-ground",
+            "ground-band",
+            "foreground-lip"
+        ]);
+        stage["composition"]["placements"][1]["plane"] = json!("silhouette");
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(true));
+        assert!(!finding_codes(&verdict).contains(&"stage_foreground_plane_missing"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_scene_without_a_stage_block_validates_exactly_as_before() {
+        let (store, root, _source) = scaffolded("stage-absent");
+        store
+            .define_scene(&scene_args("hub", three_node_graph()))
+            .expect("define");
+        let verdict = store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "hub"}))
+            .expect("validate");
+        assert_eq!(verdict["valid"], json!(true));
+        assert!(verdict.get("stage_findings").is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_defined_stage_block_is_stored_on_the_record() {
+        let (store, root, _source) = scaffolded("stage-stored");
+        let mut args = scene_args("hub", three_node_graph());
+        args["stage"] = hub_stage();
+        let body = store.define_scene(&args).expect("define");
+        let record: Value = serde_json::from_str(
+            &fs::read_to_string(body["record_path"].as_str().expect("path")).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(
+            record["stage"]["camera_rig"]["vanishing_point"],
+            json!([624, -42])
+        );
+        assert_eq!(
+            record["stage"]["composition"]["luminance_milli"]["mean"],
+            json!(42800)
+        );
+        assert_eq!(
+            record["stage"]["part_tables"][1]["parts"][0]["height_units"],
+            json!(270)
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_foreground_lip_and_several_sources_clear_the_s15_and_s17_flags() {
+        let (store, root, _source) = scaffolded("stage-clear");
+        let mut stage = hub_stage();
+        stage["composition"]["depth_planes"] =
+            json!(["back-wall", "mid-ground", "ground-band", "foreground-lip"]);
+        stage["composition"]["light"]["sources"] = json!(3);
+        let verdict = stage_scene(&store, stage);
+        let mut codes = finding_codes(&verdict);
+        codes.sort_unstable();
+        assert_eq!(
+            codes,
+            ["stage_guide_plate_below_bar", "stage_ratio_below_bar"]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_stage_verdict_is_a_read_and_writes_nothing() {
+        let (store, root, _source) = scaffolded("stage-read");
+        let mut args = scene_args("hub", three_node_graph());
+        args["stage"] = hub_stage();
+        store.define_scene(&args).expect("define");
+        let before = tree(&root);
+        store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "hub"}))
+            .expect("validate");
+        assert_eq!(tree(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_standing_panel_stage_scene_is_refused() {
+        let (store, root, _source) = scaffolded("stage-panel");
+        let mut stage = hub_stage();
+        stage["composition"]["panel_form"] = json!("standing-panel");
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_panel_form_removed"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_dangling_part_reference_is_refused_with_both_records_named() {
+        let (store, root, _source) = scaffolded("stage-dangling");
+        let mut stage = hub_stage();
+        stage["composition"]["placements"][0]["part_ref"] = json!("doors:missing-door");
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_dangling_ref"));
+        let finding = verdict["stage_findings"]
+            .as_array()
+            .expect("findings")
+            .iter()
+            .find(|f| f["code"] == json!("stage_dangling_ref"))
+            .expect("the REF finding");
+        let detail = finding["detail"].as_str().expect("detail");
+        assert!(detail.contains("hub"), "the scene is named: {detail}");
+        assert!(
+            detail.contains("doors:missing-door"),
+            "the reference is named: {detail}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_parchment_door_is_refused() {
+        let (store, root, _source) = scaffolded("stage-parchment-door");
+        let mut stage = hub_stage();
+        stage["part_tables"][1]["parts"][0]["leaf"] = json!("parchment");
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_door_ui_material"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_figure_taller_than_the_smallest_door_is_refused() {
+        let (store, root, _source) = scaffolded("stage-scale");
+        let mut stage = hub_stage();
+        stage["part_tables"][2]["parts"][1]["height_units"] = json!(280);
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_scale_contradiction"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_cropped_camera_rig_is_refused() {
+        let (store, root, _source) = scaffolded("stage-camera");
+        let mut stage = hub_stage();
+        stage["camera_rig"]["scale_milli"] = json!(1080);
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_camera_crops_room"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_figure_pasted_before_a_backdrop_is_refused() {
+        let (store, root, _source) = scaffolded("stage-backdrop");
+        let mut stage = hub_stage();
+        stage["composition"]["figure_grounding"] = json!("before-backdrop");
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_figure_not_grounded"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_stage_scene_with_no_light_source_is_refused() {
+        let (store, root, _source) = scaffolded("stage-nolight");
+        let mut stage = hub_stage();
+        stage["composition"]["light"]["sources"] = json!(0);
+        let verdict = stage_scene(&store, stage);
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"stage_no_light_source"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_duplicate_stage_part_is_refused_at_define_without_writing() {
+        let (store, root, _source) = scaffolded("stage-duplicate");
+        let before = tree(&root);
+        let mut stage = hub_stage();
+        stage["part_tables"][2]["parts"]
+            .as_array_mut()
+            .expect("parts")
+            .push(json!({"part_id": "delver", "kind": "figure", "height_units": 200}));
+        let mut args = scene_args("hub", three_node_graph());
+        args["stage"] = stage;
+        let err = store.define_scene(&args).expect_err("refused");
+        assert_eq!(err.code, "invalid_record");
+        assert_eq!(tree(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_an_oversized_stage_block_is_refused_at_define_without_writing() {
+        let (store, root, _source) = scaffolded("stage-oversized");
+        let before = tree(&root);
+        let mut stage = hub_stage();
+        let tables: Vec<Value> = (0..17)
+            .map(|i| json!({"table_id": format!("t{i}"), "parts": []}))
+            .collect();
+        stage["part_tables"] = json!(tables);
+        let mut args = scene_args("hub", three_node_graph());
+        args["stage"] = stage;
+        let err = store.define_scene(&args).expect_err("refused");
+        assert_eq!(err.code, "bound_exceeded");
+        assert_eq!(tree(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adv_a_malformed_stage_block_written_behind_the_server_is_refused() {
+        let (store, root, _source) = scaffolded("stage-malformed");
+        let body = store
+            .define_scene(&scene_args("hub", three_node_graph()))
+            .expect("define");
+        let path = body["record_path"].as_str().expect("path").to_string();
+        let mut record: Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        record["stage"] = json!({"camera_rig": 42});
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&record).expect("encode"),
+        )
+        .expect("write");
+        let verdict = store
+            .validate_scene(&json!({"project_id": "first-light",
+                                    "scene_id": "hub"}))
+            .expect("validate");
+        assert_eq!(verdict["valid"], json!(false));
+        assert!(refusal_codes(&verdict).contains(&"invalid_record"));
         let _ = fs::remove_dir_all(&root);
     }
 
