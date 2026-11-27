@@ -22,13 +22,13 @@
     "url": "https://github.com/qompassai/meister"
   },
   "title": "Meister",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "websiteUrl": "https://qompass.ai/solutions/meister/",
   "packages": [
     {
       "registryType": "cargo",
       "identifier": "meister",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "transport": {
         "type": "stdio"
       }

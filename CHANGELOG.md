@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 — 2026-11-27
+
+- crates.io README fix: the 0.6.0 publish's registry metadata carried the README filename instead of its content, so crates.io rendered the literal text "README.md" and the MCP Registry ownership check could not find the `mcp-name:` marker. This patch re-publishes with the README content carried correctly. No code or tool-surface change.
+
 ## 0.6.0 — 2026-11-27
 
 - Published to crates.io as `meister` 0.6.0 and to the MCP Registry as `ai.qompass/meister` 0.6.0; server.json gains the cargo package entry (`meister` 0.6.0, stdio) and the README gains the `mcp-name: ai.qompass/meister` ownership marker.
