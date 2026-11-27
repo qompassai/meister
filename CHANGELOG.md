@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-27
+
+- Published to crates.io as `meister` 0.6.0 and to the MCP Registry as `ai.qompass/meister` 0.6.0; server.json gains the cargo package entry (`meister` 0.6.0, stdio) and the README gains the `mcp-name: ai.qompass/meister` ownership marker.
 
 - `two_model` form kind renamed `adult` -> `grown` (decision D12,
   Owner-ruled 2026-11-17). No stored-record migration: no live

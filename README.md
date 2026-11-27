@@ -1,5 +1,6 @@
 # Meister — Qompass SFW game maker MCP
 
+mcp-name: ai.qompass/meister
 Commissioned by the Owner, 2026-11-16 (decision D-1604), as the plan of
 record for building Meister to 1.0. Name ruled by the Owner, 2026-11-16
 (decision D-1603): **Meister** — the guild master, the rank earned by
